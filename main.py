@@ -72,7 +72,7 @@ Keep this section very simple and written in plain English.
 ## 2. Top 3 Automation Wins (High Impact, Simple to Start)
 For each win, follow this format:
 
-### Win {n}: Short, outcome-focused title
+### Win: Short, outcome-focused title
 **What to automate:**  
 - 1–3 bullets describing what part of their business to automate (calls, follow-up, scheduling, missed calls, estimates, etc.)
 
