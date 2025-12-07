@@ -1,6 +1,15 @@
-from flask import Flask, request, jsonify
+
+from flask import Flask, request, jsonify, send_from_directory
 import os
+import uuid
 from openai import OpenAI
+
+# PDF generation imports
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib import colors
 
 app = Flask(__name__)
 
@@ -8,12 +17,137 @@ app = Flask(__name__)
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 
+def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: str):
+    """
+    Turn the blueprint text into a clean, branded PDF.
+    """
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        "TitleStyle",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=20,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor("#000000"),
+        spaceAfter=12,
+    )
+
+    subtitle_style = ParagraphStyle(
+        "SubtitleStyle",
+        parent=styles["Heading2"],
+        fontName="Helvetica",
+        fontSize=12,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor("#555555"),
+        spaceAfter=18,
+    )
+
+    heading_style = ParagraphStyle(
+        "HeadingStyle",
+        parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=14,
+        textColor=colors.HexColor("#000000"),
+        spaceBefore=12,
+        spaceAfter=6,
+    )
+
+    body_style = ParagraphStyle(
+        "BodyStyle",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=10,
+        leading=14,
+        textColor=colors.HexColor("#222222"),
+        spaceAfter=6,
+    )
+
+    doc = SimpleDocTemplate(
+        pdf_path,
+        pagesize=letter,
+        title="AI Business Blueprint",
+        author="Apex Automation",
+        leftMargin=54,
+        rightMargin=54,
+        topMargin=54,
+        bottomMargin=54,
+    )
+
+    story = []
+
+    # Header / cover
+    story.append(Paragraph("Apex Automation", title_style))
+    story.append(
+        Paragraph("AI Business Blueprint for Your Service Business", subtitle_style)
+    )
+
+    owner_line = f"For: {name if name else 'Your Business Owner'}"
+    if business_name:
+        owner_line += f"  |  Business: {business_name}"
+
+    story.append(Paragraph(owner_line, body_style))
+    story.append(Spacer(1, 18))
+
+    # Intro block
+    story.append(
+        Paragraph(
+            "This document outlines where your business is currently leaking time and money, and the simplest automation wins to fix it over the next 30 days.",
+            body_style,
+        )
+    )
+    story.append(Spacer(1, 12))
+
+    # Split the blueprint text into chunks by double line breaks
+    sections = blueprint_text.split("\n\n")
+
+    for section in sections:
+        stripped = section.strip()
+        if not stripped:
+            continue
+
+        # Simple handling: if a line starts with '#', treat it as a heading
+        if stripped.startswith("# "):
+            # Main heading
+            heading_text = stripped.lstrip("# ").strip()
+            story.append(Spacer(1, 12))
+            story.append(Paragraph(heading_text, heading_style))
+
+        elif stripped.startswith("## "):
+            heading_text = stripped.lstrip("# ").strip()
+            story.append(Spacer(1, 8))
+            story.append(Paragraph(heading_text, heading_style))
+
+        else:
+            # Regular paragraph
+            # Replace simple bullets with nicer paragraphs if needed
+            # We'll just render them as text here
+            story.append(Paragraph(stripped.replace("\n", "<br/>"), body_style))
+
+    # Final CTA
+    story.append(Spacer(1, 18))
+    story.append(
+        Paragraph(
+            "<b>Next Step:</b> Book a quick strategy call so we can walk through this blueprint together and decide what to build first.",
+            body_style,
+        )
+    )
+    story.append(
+        Paragraph(
+            "On the call, we’ll help you prioritize the fastest wins for more booked jobs, fewer missed calls, and 10–20 hours back per week.",
+            body_style,
+        )
+    )
+
+    doc.build(story)
+
+
 @app.route("/run", methods=["POST"])
 def run_blueprint():
     """
     Called by your automation system when the form is submitted.
     Takes the contact + form answers, generates a blueprint,
-    and returns it as JSON.
+    generates a PDF, and returns everything as JSON.
     """
     data = request.get_json(force=True) or {}
 
@@ -160,11 +294,25 @@ Formatting rules:
         if marker in blueprint_text:
             summary_section = blueprint_text.split(marker, 1)[0].strip()
 
+        # Generate a unique PDF file in /tmp
+        pdf_id = uuid.uuid4().hex
+        pdf_filename = f"blueprint_{pdf_id}.pdf"
+        pdf_dir = "/tmp"
+        pdf_path = os.path.join(pdf_dir, pdf_filename)
+
+        generate_pdf(blueprint_text, pdf_path, name, business_name)
+
+        # Build a URL that your automation system can use
+        # request.host_url gives something like "https://your-app.onrender.com/"
+        base_url = request.host_url.rstrip("/")
+        pdf_url = f"{base_url}/pdf/{pdf_id}"
+
         return jsonify(
             {
                 "success": True,
                 "blueprint": blueprint_text,      # full document
                 "summary": summary_section,       # quick overview section
+                "pdf_url": pdf_url,               # link to the PDF
                 "name": name,
                 "email": email,
                 "business_name": business_name,
@@ -179,6 +327,16 @@ Formatting rules:
                 "error": str(e),
             }
         ), 500
+
+
+@app.route("/pdf/<pdf_id>", methods=["GET"])
+def serve_pdf(pdf_id):
+    """
+    Serve the generated PDF files from /tmp.
+    """
+    pdf_dir = "/tmp"
+    filename = f"blueprint_{pdf_id}.pdf"
+    return send_from_directory(pdf_dir, filename, mimetype="application/pdf")
 
 
 @app.route("/", methods=["GET"])
