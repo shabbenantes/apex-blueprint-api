@@ -1,6 +1,10 @@
-from flask import Flask, request, jsonify, send_from_directory
+
+import json
 import os
 import uuid
+import base64
+
+import boto3
 from openai import OpenAI
 
 # PDF generation imports
@@ -10,10 +14,10 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib import colors
 
-app = Flask(__name__)
-
-# OpenAI client using env var (set OPENAI_API_KEY in Render)
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+# ---------- GLOBAL CLIENTS ----------
+openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+s3_client = boto3.client("s3")
+S3_BUCKET = os.environ.get("S3_BUCKET_NAME", "")
 
 
 # --------------------------------------------------------------------
@@ -21,7 +25,7 @@ client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 # --------------------------------------------------------------------
 def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: str):
     """
-    Turn the blueprint text into a clean, branded PDF with clearer sections and subheadings.
+    Turn the blueprint text into a clean, branded PDF with clearer sections.
     """
     styles = getSampleStyleSheet()
 
@@ -55,24 +59,14 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         spaceAfter=4,
     )
 
-    section_heading_style = ParagraphStyle(
-        "SectionHeadingStyle",
+    heading_style = ParagraphStyle(
+        "HeadingStyle",
         parent=styles["Heading2"],
         fontName="Helvetica-Bold",
         fontSize=14,
         textColor=colors.HexColor("#0A1A2F"),
         spaceBefore=16,
         spaceAfter=6,
-    )
-
-    subheading_style = ParagraphStyle(
-        "SubheadingStyle",
-        parent=styles["Heading3"],
-        fontName="Helvetica-Bold",
-        fontSize=11,
-        textColor=colors.HexColor("#1C3B5D"),
-        spaceBefore=10,
-        spaceAfter=4,
     )
 
     body_style = ParagraphStyle(
@@ -124,62 +118,49 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     # Short intro
     story.append(
         Paragraph(
-            "This blueprint shows where your business is currently leaking time and money, and the simplest automation wins to fix it over the next 30 days.",
+            "This blueprint shows where your business is currently leaking time and money, "
+            "and the simplest automation wins to fix it over the next 30 days.",
             body_style,
         )
     )
-    story.append(Spacer(1, 18))
+    story.append(Spacer(1, 12))
 
-    # ------- BODY FROM BLUEPRINT TEXT (line-by-line for nicer formatting) -------
+    # ------- BODY FROM BLUEPRINT TEXT -------
+    sections = blueprint_text.split("\n\n")
 
-    lines = blueprint_text.splitlines()
-    for raw_line in lines:
-        line = raw_line.rstrip()
-        if not line:
-            # Blank line: small spacer
-            story.append(Spacer(1, 4))
+    for section in sections:
+        stripped = section.strip()
+        if not stripped:
             continue
 
-        # Main in-document heading (# ...)
-        if line.startswith("# "):
-            heading_text = line.lstrip("# ").strip()
-            story.append(Spacer(1, 10))
-            story.append(Paragraph(heading_text, section_heading_style))
-            continue
-
-        # Section heading (## ...)
-        if line.startswith("## "):
-            heading_text = line.lstrip("# ").strip()
+        # Detect headings from markdown-style text
+        if stripped.startswith("# "):
+            heading_text = stripped.lstrip("# ").strip()
             story.append(Spacer(1, 8))
-            story.append(Paragraph(heading_text, section_heading_style))
-            continue
+            story.append(Paragraph(heading_text, heading_style))
 
-        # Subheading (### ...), e.g. each WIN title
-        if line.startswith("### "):
-            heading_text = line.lstrip("#").strip()
-            story.append(Spacer(1, 4))
-            story.append(Paragraph(heading_text, subheading_style))
-            continue
+        elif stripped.startswith("## "):
+            heading_text = stripped.lstrip("# ").strip()
+            story.append(Spacer(1, 6))
+            story.append(Paragraph(heading_text, heading_style))
 
-        # Regular text or bullets
-        # Make simple bullets look nicer: "- " → "• "
-        if line.lstrip().startswith("- "):
-            bullet_text = "• " + line.lstrip()[2:]
-            story.append(Paragraph(bullet_text, body_style))
         else:
-            story.append(Paragraph(line.replace("\n", "<br/>"), body_style))
+            # Render bullets and normal paragraphs
+            story.append(Paragraph(stripped.replace("\n", "<br/>"), body_style))
 
     # Final CTA block
     story.append(Spacer(1, 18))
     story.append(
         Paragraph(
-            "<b>Next Step:</b> Book a quick strategy call so we can walk through this blueprint together and decide what to build first.",
+            "<b>Next Step:</b> Book a quick strategy call so we can walk through this blueprint together "
+            "and decide what to build first.",
             body_style,
         )
     )
     story.append(
         Paragraph(
-            "On the call, we’ll help you prioritize the fastest wins for more booked jobs, fewer missed calls, and 10–20 hours back per week.",
+            "On the call, we’ll help you prioritize the fastest wins for more booked jobs, "
+            "fewer missed calls, and 10–20 hours back per week.",
             body_style,
         )
     )
@@ -188,20 +169,16 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
 
 
 # --------------------------------------------------------------------
-# MAIN ENDPOINT (single prompt, stable)
+# CORE LOGIC (extracted so it can be reused)
 # --------------------------------------------------------------------
-@app.route("/run", methods=["POST"])
-def run_blueprint():
+def build_blueprint(payload: dict):
     """
-    Called by your automation system when the form is submitted.
-    Takes the contact + form answers, generates a blueprint,
-    generates a PDF, and returns everything as JSON.
+    Core logic: parse input, call OpenAI, generate PDF, upload to S3.
+    Returns the JSON payload we send back to GoHighLevel.
     """
-    data = request.get_json(force=True) or {}
-
     # Try to pull out contact info from typical payload shapes
-    contact = data.get("contact", {}) or data.get("contact_data", {})
-    form_fields = data.get("form_fields", {}) or data.get("form", {}) or {}
+    contact = payload.get("contact", {}) or payload.get("contact_data", {})
+    form_fields = payload.get("form_fields", {}) or payload.get("form", {}) or {}
 
     # Safe fallbacks so it never crashes if a key is missing
     name = (
@@ -224,7 +201,7 @@ def run_blueprint():
         raw_form_text_lines.append(f"{key}: {value}")
     raw_form_text = "\n".join(raw_form_text_lines) if raw_form_text_lines else "N/A"
 
-    # 🔥 AI Business Blueprint prompt (fixed, no illegal { } inside)
+    # ---------- PROMPT ----------
     prompt = f"""
 You are APEX AI, a business automation consultant for home service companies.
 Your job is to create a clean, premium, easy-to-read AI Automation Blueprint
@@ -369,73 +346,103 @@ Owner's raw answers:
 {raw_form_text}
 """
 
-    try:
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            input=prompt,
-        )
+    # ---------- CALL OPENAI ----------
+    oa_response = openai_client.responses.create(
+        model="gpt-4.1-mini",
+        input=prompt,
+    )
 
-        # Full blueprint text
-        blueprint_text = response.output[0].content[0].text
+    # Depending on SDK version this might be .output[0].content[0].text or .output[0].content[0].text.value
+    content_obj = oa_response.output[0].content[0]
+    blueprint_text = getattr(content_obj, "text", content_obj)
 
-        # Try to carve out a shorter "summary" section for email previews:
-        # everything before "## 2. Your Top 3 Automation Wins"
+    # Try to carve out a shorter "summary" section for email previews:
+    marker = "## 2. Your Top 3 Automation Wins"
+    if marker in blueprint_text:
+        summary_section = blueprint_text.split(marker, 1)[0].strip()
+    else:
         summary_section = blueprint_text
-        marker = "## 2. Your Top 3 Automation Wins"
-        if marker in blueprint_text:
-            summary_section = blueprint_text.split(marker, 1)[0].strip()
 
-        # Generate a unique PDF file in /tmp
-        pdf_id = uuid.uuid4().hex
-        pdf_filename = f"blueprint_{pdf_id}.pdf"
-        pdf_dir = "/tmp"
-        pdf_path = os.path.join(pdf_dir, pdf_filename)
+    # ---------- GENERATE PDF TO /tmp ----------
+    pdf_id = uuid.uuid4().hex
+    pdf_filename = f"blueprint_{pdf_id}.pdf"
+    pdf_path = os.path.join("/tmp", pdf_filename)
 
-        generate_pdf(blueprint_text, pdf_path, name, business_name)
+    generate_pdf(blueprint_text, pdf_path, name, business_name)
 
-        # Build a URL that your automation system can use
-        base_url = request.host_url.rstrip("/")
-        pdf_url = f"{base_url}/pdf/{pdf_id}"
+    # ---------- UPLOAD TO S3 ----------
+    if not S3_BUCKET:
+        raise RuntimeError("S3_BUCKET_NAME environment variable is not set.")
 
-        return jsonify(
-            {
-                "success": True,
-                "blueprint": blueprint_text,   # full document
-                "summary": summary_section,    # quick overview section
-                "pdf_url": pdf_url,            # link to the PDF
-                "name": name,
-                "email": email,
-                "business_name": business_name,
+    s3_key = f"blueprints/{pdf_filename}"
+
+    s3_client.upload_file(
+        Filename=pdf_path,
+        Bucket=S3_BUCKET,
+        Key=s3_key,
+        ExtraArgs={"ContentType": "application/pdf"},
+    )
+
+    # Generate a presigned URL (e.g. 30 days)
+    pdf_url = s3_client.generate_presigned_url(
+        ClientMethod="get_object",
+        Params={"Bucket": S3_BUCKET, "Key": s3_key},
+        ExpiresIn=60 * 60 * 24 * 30,  # 30 days
+    )
+
+    # ---------- FINAL JSON PAYLOAD ----------
+    return {
+        "success": True,
+        "blueprint": blueprint_text,
+        "summary": summary_section,
+        "pdf_url": pdf_url,
+        "name": name,
+        "email": email,
+        "business_name": business_name,
+    }
+
+
+# --------------------------------------------------------------------
+# LAMBDA HANDLER
+# --------------------------------------------------------------------
+def lambda_handler(event, context):
+    """
+    AWS Lambda entrypoint. Expects an API Gateway / HTTP API event.
+    """
+    try:
+        # Basic healthcheck route if you ever hit GET /
+        raw_path = event.get("rawPath") or event.get("path", "")
+        http_method = (event.get("requestContext", {})
+                       .get("http", {})
+                       .get("method", event.get("httpMethod", "")))
+
+        if http_method == "GET" and raw_path in ("", "/", "/health"):
+            return {
+                "statusCode": 200,
+                "headers": {"Content-Type": "text/plain"},
+                "body": "Apex Blueprint Lambda is running",
             }
-        )
+
+        # We expect POST /run from GoHighLevel
+        body = event.get("body") or "{}"
+        if event.get("isBase64Encoded"):
+            body = base64.b64decode(body).decode("utf-8")
+
+        payload = json.loads(body)
+
+        result = build_blueprint(payload)
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps(result),
+        }
 
     except Exception as e:
-        print("Error generating blueprint:", e)
-        return jsonify(
-            {
-                "success": False,
-                "error": str(e),
-            }
-        ), 500
-
-
-# --------------------------------------------------------------------
-# PDF SERVE + HEALTHCHECK
-# --------------------------------------------------------------------
-@app.route("/pdf/<pdf_id>", methods=["GET"])
-def serve_pdf(pdf_id):
-    """
-    Serve the generated PDF files from /tmp.
-    """
-    pdf_dir = "/tmp"
-    filename = f"blueprint_{pdf_id}.pdf"
-    return send_from_directory(pdf_dir, filename, mimetype="application/pdf")
-
-
-@app.route("/", methods=["GET"])
-def healthcheck():
-    return "Apex Blueprint API is running", 200
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+        # Simple error logging in CloudWatch
+        print("Error in lambda_handler:", repr(e))
+        return {
+            "statusCode": 500,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"success": False, "error": str(e)}),
+        }
