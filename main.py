@@ -1,8 +1,8 @@
-
 from flask import Flask, request, jsonify, send_from_directory
 import os
 import uuid
 from openai import OpenAI
+import boto3  # NEW: for S3 upload
 
 # PDF generation imports
 from reportlab.lib.pagesizes import letter
@@ -15,6 +15,12 @@ app = Flask(__name__)
 
 # OpenAI client using env var (set OPENAI_API_KEY in Render)
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+# NEW: S3 client using env vars (set these in Render)
+S3_BUCKET = os.environ.get("S3_BUCKET_NAME")
+S3_REGION = os.environ.get("S3_REGION", "us-east-1")
+s3_client = boto3.client("s3", region_name=S3_REGION)
+
 
 # --------------------------------------------------------------------
 # PDF GENERATION
@@ -169,7 +175,7 @@ def run_blueprint():
     """
     Called by your automation system when the form is submitted.
     Takes the contact + form answers, generates a blueprint in 3 AI calls,
-    generates a PDF, and returns everything as JSON.
+    generates a PDF, uploads it to S3, and returns everything as JSON.
     """
     data = request.get_json(force=True) or {}
 
@@ -267,9 +273,7 @@ Do NOT include anything else. Start directly with "# AI Automation Blueprint".
             input=prompt_1,
         )
         part1_text = resp1.output[0].content[0].text
-
-        # We'll use this as the "summary" for the email
-        summary_section = part1_text.strip()
+        summary_section = part1_text.strip()  # used in the email
 
         # --------- PROMPT 2: Top Wins + Scorecard ----------
         prompt_2 = f"""{shared_context}
@@ -374,7 +378,7 @@ Do NOT include anything else.
             ]
         ).strip()
 
-        # --------- GENERATE PDF ----------
+        # --------- GENERATE PDF LOCALLY ----------
         pdf_id = uuid.uuid4().hex
         pdf_filename = f"blueprint_{pdf_id}.pdf"
         pdf_dir = "/tmp"
@@ -382,16 +386,31 @@ Do NOT include anything else.
 
         generate_pdf(blueprint_text, pdf_path, name, business_name)
 
-        # Build a URL that your automation system can use
-        base_url = request.host_url.rstrip("/")
-        pdf_url = f"{base_url}/pdf/{pdf_id}"
+        # --------- UPLOAD PDF TO S3 (PERSISTENT) ----------
+        if not S3_BUCKET:
+            raise RuntimeError("S3_BUCKET_NAME env var is not set in Render")
+
+        s3_key = f"blueprints/{pdf_filename}"
+
+        s3_client.upload_file(
+            Filename=pdf_path,
+            Bucket=S3_BUCKET,
+            Key=s3_key,
+            ExtraArgs={
+                "ContentType": "application/pdf",
+                "ACL": "public-read",  # make the file visible by link
+            },
+        )
+
+        # Public S3 URL (assuming bucket allows public-read via ACL)
+        pdf_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
 
         return jsonify(
             {
                 "success": True,
                 "blueprint": blueprint_text,   # full document
                 "summary": summary_section,    # first sections only
-                "pdf_url": pdf_url,            # link to the PDF
+                "pdf_url": pdf_url,            # 🔥 S3 link that won't disappear
                 "name": name,
                 "email": email,
                 "business_name": business_name,
@@ -410,23 +429,21 @@ Do NOT include anything else.
 
 
 # --------------------------------------------------------------------
-# PDF SERVE + HEALTHCHECK
+# (Optional) /pdf endpoint still here, but now unused
 # --------------------------------------------------------------------
 @app.route("/pdf/<pdf_id>", methods=["GET"])
 def serve_pdf(pdf_id):
     """
-    Serve the generated PDF files from /tmp.
+    Legacy route. PDFs are now stored on S3 instead of local /tmp.
+    Kept only so old links don't 500, but they won't find files after reboot.
     """
-    pdf_dir = "/tmp"
-    filename = f"blueprint_{pdf_id}.pdf"
-    return send_from_directory(pdf_dir, filename, mimetype="application/pdf")
+    return "PDFs are now stored on S3.", 410
 
 
 @app.route("/", methods=["GET"])
 def healthcheck():
-    return "Apex Blueprint API (Render, 3-prompt version) is running", 200
+    return "Apex Blueprint API (Render + S3, 3-prompt version) is running", 200
 
 
 if __name__ == "__main__":
-    # Local dev; Render will use gunicorn
     app.run(host="0.0.0.0", port=10000)
