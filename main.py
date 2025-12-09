@@ -1,10 +1,7 @@
 
-import json
+from flask import Flask, request, jsonify, send_from_directory
 import os
 import uuid
-import base64
-
-import boto3
 from openai import OpenAI
 
 # PDF generation imports
@@ -14,11 +11,10 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib import colors
 
-# ---------- GLOBAL CLIENTS ----------
-openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-s3_client = boto3.client("s3")
-S3_BUCKET = os.environ.get("S3_BUCKET_NAME", "")
+app = Flask(__name__)
 
+# OpenAI client using env var (set OPENAI_API_KEY in Render)
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # --------------------------------------------------------------------
 # PDF GENERATION
@@ -118,8 +114,7 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     # Short intro
     story.append(
         Paragraph(
-            "This blueprint shows where your business is currently leaking time and money, "
-            "and the simplest automation wins to fix it over the next 30 days.",
+            "This blueprint shows where your business is currently leaking time and money, and the simplest automation wins to fix it over the next 30 days.",
             body_style,
         )
     )
@@ -152,15 +147,13 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     story.append(Spacer(1, 18))
     story.append(
         Paragraph(
-            "<b>Next Step:</b> Book a quick strategy call so we can walk through this blueprint together "
-            "and decide what to build first.",
+            "<b>Next Step:</b> Book a quick strategy call so we can walk through this blueprint together and decide what to build first.",
             body_style,
         )
     )
     story.append(
         Paragraph(
-            "On the call, we’ll help you prioritize the fastest wins for more booked jobs, "
-            "fewer missed calls, and 10–20 hours back per week.",
+            "On the call, we’ll help you prioritize the fastest wins for more booked jobs, fewer missed calls, and 10–20 hours back per week.",
             body_style,
         )
     )
@@ -169,16 +162,20 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
 
 
 # --------------------------------------------------------------------
-# CORE LOGIC (extracted so it can be reused)
+# /run – 3-PROMPT BLUEPRINT GENERATION
 # --------------------------------------------------------------------
-def build_blueprint(payload: dict):
+@app.route("/run", methods=["POST"])
+def run_blueprint():
     """
-    Core logic: parse input, call OpenAI, generate PDF, upload to S3.
-    Returns the JSON payload we send back to GoHighLevel.
+    Called by your automation system when the form is submitted.
+    Takes the contact + form answers, generates a blueprint in 3 AI calls,
+    generates a PDF, and returns everything as JSON.
     """
+    data = request.get_json(force=True) or {}
+
     # Try to pull out contact info from typical payload shapes
-    contact = payload.get("contact", {}) or payload.get("contact_data", {})
-    form_fields = payload.get("form_fields", {}) or payload.get("form", {}) or {}
+    contact = data.get("contact", {}) or data.get("contact_data", {})
+    form_fields = data.get("form_fields", {}) or data.get("form", {}) or {}
 
     # Safe fallbacks so it never crashes if a key is missing
     name = (
@@ -201,248 +198,235 @@ def build_blueprint(payload: dict):
         raw_form_text_lines.append(f"{key}: {value}")
     raw_form_text = "\n".join(raw_form_text_lines) if raw_form_text_lines else "N/A"
 
-    # ---------- PROMPT ----------
-    prompt = f"""
+    # --------- SHARED CONTEXT FOR ALL PROMPTS ----------
+    shared_context = f"""
 You are APEX AI, a business automation consultant for home service companies.
 Your job is to create a clean, premium, easy-to-read AI Automation Blueprint
-based on the owner’s answers.
+based on the owner's answers.
 
-Your writing must follow these rules:
+Owner name: {name}
+Business name: {business_name if business_name else "Not specified"}
+
+Owner's raw answers:
+{raw_form_text}
+
+STYLE RULES (apply to ALL sections you write):
 - Use SIMPLE business language (no jargon: no “CRM”, no “API”, no “backend”)
 - Be extremely clear
 - Be structured and visually clean
-- Be written like a professional consultant
+- Sound like a calm, professional consultant
 - Be outcome-focused: more booked jobs, fewer missed calls, faster response, less stress
 - Make the owner feel understood
-- Make the blueprint feel valuable, but NOT overwhelming
-- Do NOT give step-by-step instructions
-- Do NOT give tool setup instructions
+- Make each section feel valuable, but NOT overwhelming
+- Do NOT give step-by-step tech instructions
+- Do NOT talk about tools, software, or integrations
 - Do NOT refer to “the form” or “the user”
 - Talk directly to the owner using “you” and “your business”
+- Prefer bullet points over long paragraphs
 - Keep sections tight, clean, and easy to scan
+"""
 
----------------------------------------------------------
-# AI AUTOMATION BLUEPRINT
-Prepared for: {name}
-Business: {business_name if business_name else "Not specified"}
+    try:
+        # --------- PROMPT 1: Summary + What You Told Me ----------
+        prompt_1 = f"""{shared_context}
 
----------------------------------------------------------
+Write ONLY the following sections in Markdown:
+
+# AI Automation Blueprint
+
 ## 1. Your 1-Page Business Summary
-(Keep this ultra clear, 3–6 bullets total)
-
-Include:
-- What type of business you appear to run
-- Your biggest pain points (rewrite them in clear language)
+Write 3–6 short bullets that clearly describe:
+- What type of business they appear to run
+- Their biggest pain points in your own words
 - The biggest opportunities for automation
-- What is costing you the most money right now
-- What feels overwhelming or chaotic in your current process
+- What is costing them the most money right now
+- What feels overwhelming or chaotic in their current process
 
-Make this section feel like: “You understand me.”
+This should feel like: "You really understand my situation."
 
----------------------------------------------------------
-## 2. Your Top 3 Automation Wins
-(Each win MUST be outcome-focused, simple, and powerful)
+## 2. What You Told Me
+Rewrite their answers into clean categories:
 
-For each win, use this structure:
+### Your Goals
+- 2–4 bullets summarizing their main goals
+
+### Your Challenges
+- 3–5 bullets summarizing the problems they described
+
+### Where You’re Losing Time
+- 2–4 bullets explaining where time is being wasted
+
+### Opportunities You’re Not Taking Advantage Of
+- 3–5 bullets showing where they could be getting more value
+
+Do NOT include anything else. Start directly with "# AI Automation Blueprint".
+"""
+
+        resp1 = client.responses.create(
+            model="gpt-4.1-mini",
+            input=prompt_1,
+        )
+        part1_text = resp1.output[0].content[0].text
+
+        # We'll use this as the "summary" for the email
+        summary_section = part1_text.strip()
+
+        # --------- PROMPT 2: Top Wins + Scorecard ----------
+        prompt_2 = f"""{shared_context}
+
+Write ONLY the following sections in Markdown.
+Continue the numbering from the previous content.
+
+## 3. Your Top 3 Automation Wins
+
+For each win, follow this structure:
 
 ### WIN: Short, outcome-focused title
-Examples: “Never Miss Another Call”, “Get Faster Booked Jobs”,
-“Follow-Up That Never Stops”, “More Reviews on Autopilot”, etc.
+Examples of good titles:
+- Never Miss Another Call
+- Faster Booked Jobs
+- Follow-Up That Never Stops
+- More Reviews on Autopilot
 
 **What this fixes in your business:**
-- 2–4 bullets describing the specific business problem this automation solves
-- Use simple, real-world language
+- 2–4 bullets describing the specific business problem
 
 **What this does for you:**
 - 3–4 bullets describing the benefits (time saved, more booked jobs, fewer headaches)
 
 **What’s included in this win:**
-- 3–5 items described in plain English
-  Examples: “Instant text replies”, “Lead follow-up messages”,
-  “Automatic reminders”, “After-hours call handling”
+- 3–5 bullets in plain English, describing what the automation actually does
+  (for example: instant text replies, lead follow-up messages, automatic reminders, after-hours handling)
 
-Do NOT describe how to build any automation.
-Just describe what it does and why it matters.
+Do NOT explain how to build anything. Only what it does and why it matters.
 
----------------------------------------------------------
-## 3. Your Automation Scorecard (0–100)
+## 4. Your Automation Scorecard (0–100)
 
-Give the business a simple “automation maturity score” based on the answers.
-Explain:
+Give the business a simple "automation maturity score" from 0–100.
+Then write 4–6 bullets that explain:
 - Where they are strong
 - Where they are weak
 - What this score means in plain English
+- What is most urgent to fix
 
----------------------------------------------------------
-## 4. Your 30-Day Game Plan
-(Each week: 3–4 simple bullets)
-
-### Week 1 — Stabilize the Business
-- Fix the biggest leaks first (missed calls, slow response, lost leads)
-- Get one automation live quickly
-- Give the owner a quick win
-
-### Week 2 — Increase Booked Jobs
-- Add follow-up messages
-- Reduce no-shows
-- Improve new lead response
-
-### Week 3 — Build Customer Experience
-- Improve review flow
-- Improve rebooking
-- Add simple customer updates or reminders
-
-### Week 4 — Scale and Optimize
-- Add additional automations that support growth
-- Improve reporting and visibility
-- Prep for monthly maintenance
-
-Keep each bullet SIMPLE and non-technical.
-
----------------------------------------------------------
-## 5. What You Told Me
-Rewrite the owner’s answers in clean categories:
-
-### Your Goals
-- Summarize their top goals in fresh language
-
-### Your Challenges
-- Summarize the problems they described
-
-### Where You’re Losing Time
-- Explain in clear, simple terms
-
-### Opportunities You’re Not Taking Advantage Of
-- Show them the value they’re leaving on the table
-
-Make this section feel like a mirror: “Yes, that IS my situation.”
-
----------------------------------------------------------
-## 6. Final Recommendations
-Give 4–6 clear bullets such as:
-
-- “Start with Win #1 — it will bring the fastest return.”
-- “You don’t need to fix everything at once — follow the 30-day plan.”
-- “Your biggest opportunity is improving ____.”
-- “Here’s what to have ready before an automation strategy call.”
-
-DO NOT sell anything directly.
-Just create clarity and confidence.
-
----------------------------------------------------------
-
-STYLE REQUIREMENTS:
-- Clean, crisp, consultant tone
-- Short sentences
-- Lots of spacing
-- Bullet points preferred over paragraphs
-- No fluff
-- No AI-sounding text
-- No technical explanations
-- No tool names unless absolutely necessary
-- Must feel PREMIUM, calm, and high-trust
-
-Owner's raw answers:
-{raw_form_text}
+Do NOT include anything else.
 """
 
-    # ---------- CALL OPENAI ----------
-    oa_response = openai_client.responses.create(
-        model="gpt-4.1-mini",
-        input=prompt,
-    )
+        resp2 = client.responses.create(
+            model="gpt-4.1-mini",
+            input=prompt_2,
+        )
+        part2_text = resp2.output[0].content[0].text
 
-    # Depending on SDK version this might be .output[0].content[0].text or .output[0].content[0].text.value
-    content_obj = oa_response.output[0].content[0]
-    blueprint_text = getattr(content_obj, "text", content_obj)
+        # --------- PROMPT 3: 30-Day Plan + Final Recommendations ----------
+        prompt_3 = f"""{shared_context}
 
-    # Try to carve out a shorter "summary" section for email previews:
-    marker = "## 2. Your Top 3 Automation Wins"
-    if marker in blueprint_text:
-        summary_section = blueprint_text.split(marker, 1)[0].strip()
-    else:
-        summary_section = blueprint_text
+Write ONLY the following sections in Markdown.
+Continue the numbering from the previous content.
 
-    # ---------- GENERATE PDF TO /tmp ----------
-    pdf_id = uuid.uuid4().hex
-    pdf_filename = f"blueprint_{pdf_id}.pdf"
-    pdf_path = os.path.join("/tmp", pdf_filename)
+## 5. Your 30-Day Game Plan
 
-    generate_pdf(blueprint_text, pdf_path, name, business_name)
+Break the next 30 days into 4 weeks.
+For each week, give 3–4 simple bullets.
 
-    # ---------- UPLOAD TO S3 ----------
-    if not S3_BUCKET:
-        raise RuntimeError("S3_BUCKET_NAME environment variable is not set.")
+### Week 1 — Stabilize the Business
+Focus on fixing the biggest leaks first (missed calls, slow response, lost leads).
 
-    s3_key = f"blueprints/{pdf_filename}"
+### Week 2 — Increase Booked Jobs
+Focus on follow-up, no-shows, and response times.
 
-    s3_client.upload_file(
-        Filename=pdf_path,
-        Bucket=S3_BUCKET,
-        Key=s3_key,
-        ExtraArgs={"ContentType": "application/pdf"},
-    )
+### Week 3 — Build Customer Experience
+Focus on reviews, rebooking, and customer communication.
 
-    # Generate a presigned URL (e.g. 30 days)
-    pdf_url = s3_client.generate_presigned_url(
-        ClientMethod="get_object",
-        Params={"Bucket": S3_BUCKET, "Key": s3_key},
-        ExpiresIn=60 * 60 * 24 * 30,  # 30 days
-    )
+### Week 4 — Scale and Optimize
+Focus on adding a bit more automation and better visibility.
 
-    # ---------- FINAL JSON PAYLOAD ----------
-    return {
-        "success": True,
-        "blueprint": blueprint_text,
-        "summary": summary_section,
-        "pdf_url": pdf_url,
-        "name": name,
-        "email": email,
-        "business_name": business_name,
-    }
+Use simple, non-technical bullets for each week.
 
+## 6. Final Recommendations
 
-# --------------------------------------------------------------------
-# LAMBDA HANDLER
-# --------------------------------------------------------------------
-def lambda_handler(event, context):
-    """
-    AWS Lambda entrypoint. Expects an API Gateway / HTTP API event.
-    """
-    try:
-        # Basic healthcheck route if you ever hit GET /
-        raw_path = event.get("rawPath") or event.get("path", "")
-        http_method = (event.get("requestContext", {})
-                       .get("http", {})
-                       .get("method", event.get("httpMethod", "")))
+Write 5–7 short bullets with clear guidance, such as:
+- Which automation win to start with first
+- What will bring the fastest return
+- Reassurance that they don’t need to fix everything at once
+- What they should have ready before an automation strategy call
+- Where their biggest long-term opportunity is
 
-        if http_method == "GET" and raw_path in ("", "/", "/health"):
-            return {
-                "statusCode": 200,
-                "headers": {"Content-Type": "text/plain"},
-                "body": "Apex Blueprint Lambda is running",
+Do NOT sell anything directly.
+Do NOT mention this being an "AI" blueprint.
+Keep the tone calm, confident, and supportive.
+
+Do NOT include anything else.
+"""
+
+        resp3 = client.responses.create(
+            model="gpt-4.1-mini",
+            input=prompt_3,
+        )
+        part3_text = resp3.output[0].content[0].text
+
+        # --------- COMBINE ALL PARTS ----------
+        blueprint_text = "\n\n".join(
+            [
+                part1_text.strip(),
+                part2_text.strip(),
+                part3_text.strip(),
+            ]
+        ).strip()
+
+        # --------- GENERATE PDF ----------
+        pdf_id = uuid.uuid4().hex
+        pdf_filename = f"blueprint_{pdf_id}.pdf"
+        pdf_dir = "/tmp"
+        pdf_path = os.path.join(pdf_dir, pdf_filename)
+
+        generate_pdf(blueprint_text, pdf_path, name, business_name)
+
+        # Build a URL that your automation system can use
+        base_url = request.host_url.rstrip("/")
+        pdf_url = f"{base_url}/pdf/{pdf_id}"
+
+        return jsonify(
+            {
+                "success": True,
+                "blueprint": blueprint_text,   # full document
+                "summary": summary_section,    # first sections only
+                "pdf_url": pdf_url,            # link to the PDF
+                "name": name,
+                "email": email,
+                "business_name": business_name,
             }
-
-        # We expect POST /run from GoHighLevel
-        body = event.get("body") or "{}"
-        if event.get("isBase64Encoded"):
-            body = base64.b64decode(body).decode("utf-8")
-
-        payload = json.loads(body)
-
-        result = build_blueprint(payload)
-
-        return {
-            "statusCode": 200,
-            "headers": {"Content-Type": "application/json"},
-            "body": json.dumps(result),
-        }
+        )
 
     except Exception as e:
-        # Simple error logging in CloudWatch
-        print("Error in lambda_handler:", repr(e))
-        return {
-            "statusCode": 500,
-            "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({"success": False, "error": str(e)}),
-        }
+        # Log the error to Render's logs
+        print("Error generating blueprint:", e, flush=True)
+        return jsonify(
+            {
+                "success": False,
+                "error": str(e),
+            }
+        ), 500
+
+
+# --------------------------------------------------------------------
+# PDF SERVE + HEALTHCHECK
+# --------------------------------------------------------------------
+@app.route("/pdf/<pdf_id>", methods=["GET"])
+def serve_pdf(pdf_id):
+    """
+    Serve the generated PDF files from /tmp.
+    """
+    pdf_dir = "/tmp"
+    filename = f"blueprint_{pdf_id}.pdf"
+    return send_from_directory(pdf_dir, filename, mimetype="application/pdf")
+
+
+@app.route("/", methods=["GET"])
+def healthcheck():
+    return "Apex Blueprint API (Render, 3-prompt version) is running", 200
+
+
+if __name__ == "__main__":
+    # Local dev; Render will use gunicorn
+    app.run(host="0.0.0.0", port=10000)
