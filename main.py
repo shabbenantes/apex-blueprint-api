@@ -20,7 +20,7 @@ client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: str):
     """
-    Turn the blueprint text into a clean, branded PDF.
+    Turn the blueprint text into a clean, branded PDF with clearer sections.
     """
     styles = getSampleStyleSheet()
 
@@ -28,20 +28,30 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         "TitleStyle",
         parent=styles["Title"],
         fontName="Helvetica-Bold",
-        fontSize=20,
+        fontSize=22,
         alignment=TA_CENTER,
-        textColor=colors.HexColor("#000000"),
-        spaceAfter=12,
+        textColor=colors.HexColor("#0A1A2F"),  # deep navy
+        spaceAfter=6,
     )
 
-    subtitle_style = ParagraphStyle(
-        "SubtitleStyle",
+    tagline_style = ParagraphStyle(
+        "TaglineStyle",
         parent=styles["Heading2"],
         fontName="Helvetica",
         fontSize=12,
         alignment=TA_CENTER,
         textColor=colors.HexColor("#555555"),
-        spaceAfter=18,
+        spaceAfter=16,
+    )
+
+    small_label_style = ParagraphStyle(
+        "SmallLabelStyle",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=9,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor("#777777"),
+        spaceAfter=4,
     )
 
     heading_style = ParagraphStyle(
@@ -49,8 +59,8 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         parent=styles["Heading2"],
         fontName="Helvetica-Bold",
         fontSize=14,
-        textColor=colors.HexColor("#000000"),
-        spaceBefore=12,
+        textColor=colors.HexColor("#0A1A2F"),
+        spaceBefore=16,
         spaceAfter=6,
     )
 
@@ -67,7 +77,7 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     doc = SimpleDocTemplate(
         pdf_path,
         pagesize=letter,
-        title="AI Business Blueprint",
+        title="AI Automation Blueprint",
         author="Apex Automation",
         leftMargin=54,
         rightMargin=54,
@@ -77,29 +87,35 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
 
     story = []
 
-    # Header / cover (basic for now – we can upgrade later)
+    # ------- COVER BLOCK -------
     story.append(Paragraph("Apex Automation", title_style))
     story.append(
-        Paragraph("AI Business Blueprint for Your Service Business", subtitle_style)
+        Paragraph("AI Automation Blueprint for Your Service Business", tagline_style)
     )
 
-    owner_line = f"For: {name if name else 'Your Business Owner'}"
+    owner_line = f"Prepared for: {name if name else 'Your Business Owner'}"
     if business_name:
-        owner_line += f"  |  Business: {business_name}"
+        owner_line += f"  •  Business: {business_name}"
 
-    story.append(Paragraph(owner_line, body_style))
+    story.append(Paragraph(owner_line, small_label_style))
+    story.append(Paragraph("30-Day Automation Roadmap", small_label_style))
     story.append(Spacer(1, 18))
 
-    # Intro block
+    # Simple horizontal rule effect
+    story.append(Paragraph("<para alignment='center'><font size=8 color='#CCCCCC'>────────────────────────────</font></para>", small_label_style))
+    story.append(Spacer(1, 12))
+
+    # Short intro
     story.append(
         Paragraph(
-            "This document outlines where your business is currently leaking time and money, and the simplest automation wins to fix it over the next 30 days.",
+            "This blueprint shows where your business is currently leaking time and money, and the simplest automation wins to fix it over the next 30 days.",
             body_style,
         )
     )
     story.append(Spacer(1, 12))
 
-    # Split the blueprint text into chunks by double line breaks
+    # ------- BODY FROM BLUEPRINT TEXT -------
+
     sections = blueprint_text.split("\n\n")
 
     for section in sections:
@@ -107,22 +123,23 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         if not stripped:
             continue
 
-        # Simple handling: if a line starts with '#', treat it as a heading
+        # Detect headings from markdown-style text
         if stripped.startswith("# "):
-            heading_text = stripped.lstrip("# ").strip()
-            story.append(Spacer(1, 12))
-            story.append(Paragraph(heading_text, heading_style))
-
-        elif stripped.startswith("## "):
             heading_text = stripped.lstrip("# ").strip()
             story.append(Spacer(1, 8))
             story.append(Paragraph(heading_text, heading_style))
 
+        elif stripped.startswith("## "):
+            heading_text = stripped.lstrip("# ").strip()
+            story.append(Spacer(1, 6))
+            story.append(Paragraph(heading_text, heading_style))
+
         else:
-            # Regular paragraph
+            # Render bullets and normal paragraphs
+            # Replace manual line breaks with <br/>
             story.append(Paragraph(stripped.replace("\n", "<br/>"), body_style))
 
-    # Final CTA
+    # Final CTA block
     story.append(Spacer(1, 18))
     story.append(
         Paragraph(
@@ -138,7 +155,6 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     )
 
     doc.build(story)
-
 
 # ------------ APEX MULTI-STEP BLUEPRINT ENGINE HELPERS ------------
 
