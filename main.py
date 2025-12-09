@@ -1,4 +1,3 @@
-
 from flask import Flask, request, jsonify, send_from_directory
 import os
 import uuid
@@ -18,6 +17,9 @@ app = Flask(__name__)
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 
+# --------------------------------------------------------------------
+# PDF GENERATION
+# --------------------------------------------------------------------
 def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: str):
     """
     Turn the blueprint text into a clean, branded PDF with clearer sections.
@@ -102,7 +104,12 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     story.append(Spacer(1, 18))
 
     # Simple horizontal rule effect
-    story.append(Paragraph("<para alignment='center'><font size=8 color='#CCCCCC'>────────────────────────────</font></para>", small_label_style))
+    story.append(
+        Paragraph(
+            "<para alignment='center'><font size=8 color='#CCCCCC'>────────────────────────────</font></para>",
+            small_label_style,
+        )
+    )
     story.append(Spacer(1, 12))
 
     # Short intro
@@ -115,7 +122,6 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     story.append(Spacer(1, 12))
 
     # ------- BODY FROM BLUEPRINT TEXT -------
-
     sections = blueprint_text.split("\n\n")
 
     for section in sections:
@@ -136,7 +142,6 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
 
         else:
             # Render bullets and normal paragraphs
-            # Replace manual line breaks with <br/>
             story.append(Paragraph(stripped.replace("\n", "<br/>"), body_style))
 
     # Final CTA block
@@ -156,12 +161,14 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
 
     doc.build(story)
 
-# ------------ APEX MULTI-STEP BLUEPRINT ENGINE HELPERS ------------
 
+# --------------------------------------------------------------------
+# MULTI-STEP BLUEPRINT ENGINE HELPERS
+# --------------------------------------------------------------------
 def call_openai(prompt: str) -> str:
     """
-    Small helper to call the AI and return plain text.
-    If anything goes wrong, we return a safe fallback message.
+    Helper to call the AI and return plain text.
+    If anything goes wrong, return a safe fallback message.
     """
     try:
         resp = client.responses.create(
@@ -429,6 +436,9 @@ Just guide them clearly.
     return call_openai(prompt).strip()
 
 
+# --------------------------------------------------------------------
+# MAIN ENDPOINT
+# --------------------------------------------------------------------
 @app.route("/run", methods=["POST"])
 def run_blueprint():
     """
@@ -467,7 +477,7 @@ def run_blueprint():
         # 1) Industry context
         industry_info = build_industry_context(raw_form_text)
 
-        # 2) Sections
+        # 2) Sections (each with its own small prompt)
         summary_section = build_summary_section(name, business_name, industry_info, raw_form_text)
         wins_section = build_top_wins_section(industry_info, raw_form_text)
         cost_section = build_cost_section(industry_info)
@@ -544,6 +554,7 @@ def run_blueprint():
         )
 
     except Exception as e:
+        # If something blows up, log it but still respond cleanly
         print("Error generating blueprint:", e)
         return jsonify(
             {
@@ -553,6 +564,9 @@ def run_blueprint():
         ), 500
 
 
+# --------------------------------------------------------------------
+# PDF SERVE + HEALTHCHECK
+# --------------------------------------------------------------------
 @app.route("/pdf/<pdf_id>", methods=["GET"])
 def serve_pdf(pdf_id):
     """
