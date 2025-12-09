@@ -23,7 +23,7 @@ client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 # --------------------------------------------------------------------
 def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: str):
     """
-    Turn the blueprint text into a clean, branded PDF with clearer sections.
+    Turn the blueprint text into a clean, branded PDF with clearer sections and subheadings.
     """
     styles = getSampleStyleSheet()
 
@@ -57,14 +57,24 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         spaceAfter=4,
     )
 
-    heading_style = ParagraphStyle(
-        "HeadingStyle",
+    section_heading_style = ParagraphStyle(
+        "SectionHeadingStyle",
         parent=styles["Heading2"],
         fontName="Helvetica-Bold",
         fontSize=14,
         textColor=colors.HexColor("#0A1A2F"),
         spaceBefore=16,
         spaceAfter=6,
+    )
+
+    subheading_style = ParagraphStyle(
+        "SubheadingStyle",
+        parent=styles["Heading3"],
+        fontName="Helvetica-Bold",
+        fontSize=11,
+        textColor=colors.HexColor("#1C3B5D"),
+        spaceBefore=10,
+        spaceAfter=4,
     )
 
     body_style = ParagraphStyle(
@@ -120,30 +130,47 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
             body_style,
         )
     )
-    story.append(Spacer(1, 12))
+    story.append(Spacer(1, 18))
 
-    # ------- BODY FROM BLUEPRINT TEXT -------
-    sections = blueprint_text.split("\n\n")
+    # ------- BODY FROM BLUEPRINT TEXT (line-by-line for nicer formatting) -------
 
-    for section in sections:
-        stripped = section.strip()
-        if not stripped:
+    lines = blueprint_text.splitlines()
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        if not line:
+            # Blank line: small spacer
+            story.append(Spacer(1, 4))
             continue
 
-        # Detect headings from markdown-style text
-        if stripped.startswith("# "):
-            heading_text = stripped.lstrip("# ").strip()
+        # Main in-document heading (we already did cover, so this just acts as a big section title)
+        if line.startswith("# "):
+            heading_text = line.lstrip("# ").strip()
+            story.append(Spacer(1, 10))
+            story.append(Paragraph(heading_text, section_heading_style))
+            continue
+
+        # Section heading (## ...)
+        if line.startswith("## "):
+            heading_text = line.lstrip("# ").strip()
             story.append(Spacer(1, 8))
-            story.append(Paragraph(heading_text, heading_style))
+            story.append(Paragraph(heading_text, section_heading_style))
+            continue
 
-        elif stripped.startswith("## "):
-            heading_text = stripped.lstrip("# ").strip()
-            story.append(Spacer(1, 6))
-            story.append(Paragraph(heading_text, heading_style))
+        # Subheading (### ...), e.g. each WIN title
+        if line.startswith("### "):
+            heading_text = line.lstrip("#").strip()
+            story.append(Spacer(1, 4))
+            story.append(Paragraph(heading_text, subheading_style))
+            continue
 
+        # Regular text or bullets
+        # Make simple bullets look nicer: "- " → "• "
+        if line.lstrip().startswith("- "):
+            bullet_text = "• " + line.lstrip()[2:]
+            story.append(Paragraph(bullet_text, body_style))
         else:
-            # Render bullets and normal paragraphs
-            story.append(Paragraph(stripped.replace("\n", "<br/>"), body_style))
+            # Preserve inner line breaks inside paragraphs if any
+            story.append(Paragraph(line.replace("\n", "<br/>"), body_style))
 
     # Final CTA block
     story.append(Spacer(1, 18))
