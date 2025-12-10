@@ -18,6 +18,9 @@ app = Flask(__name__)
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # ---------- S3 CONFIG ----------
+# Make sure these are set in Render:
+#   S3_BUCKET_NAME = apex-blueprints-prod   (or your actual bucket name)
+#   S3_REGION      = us-east-2             (Ohio – matches your screenshots)
 S3_BUCKET = os.environ.get("S3_BUCKET_NAME")
 S3_REGION = os.environ.get("S3_REGION", "us-east-2")
 
@@ -25,16 +28,12 @@ s3_client = boto3.client("s3", region_name=S3_REGION)
 
 
 # --------------------------------------------------------------------
-# PDF GENERATION (with booking CTA)
+# PDF GENERATION
 # --------------------------------------------------------------------
 def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: str):
     """
-    Turn the blueprint text into a clean, branded PDF with clearer sections,
-    and add a strong booking CTA at the end.
+    Turn the blueprint text into a clean, branded PDF with clearer sections.
     """
-    # Use env var if set, otherwise placeholder
-    booking_url = os.environ.get("BOOKING_URL", "https://your-booking-link-here.com")
-
     styles = getSampleStyleSheet()
 
     title_style = ParagraphStyle(
@@ -85,38 +84,6 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         leading=14,
         textColor=colors.HexColor("#222222"),
         spaceAfter=6,
-    )
-
-    cta_heading_style = ParagraphStyle(
-        "CTAHeadingStyle",
-        parent=styles["Heading2"],
-        fontName="Helvetica-Bold",
-        fontSize=14,
-        alignment=TA_CENTER,
-        textColor=colors.HexColor("#0A7FFF"),  # blue
-        spaceBefore=24,
-        spaceAfter=8,
-    )
-
-    cta_body_style = ParagraphStyle(
-        "CTABodyStyle",
-        parent=styles["BodyText"],
-        fontName="Helvetica",
-        fontSize=10,
-        leading=14,
-        alignment=TA_CENTER,
-        textColor=colors.HexColor("#222222"),
-        spaceAfter=4,
-    )
-
-    link_style = ParagraphStyle(
-        "LinkStyle",
-        parent=styles["BodyText"],
-        fontName="Helvetica-Bold",
-        fontSize=11,
-        alignment=TA_CENTER,
-        textColor=colors.HexColor("#0A7FFF"),
-        spaceAfter=12,
     )
 
     doc = SimpleDocTemplate(
@@ -188,34 +155,20 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
             # Render bullets and normal paragraphs
             story.append(Paragraph(stripped.replace("\n", "<br/>"), body_style))
 
-    # ------- BOOKING CTA BLOCK -------
-    story.append(Spacer(1, 24))
-    story.append(Paragraph("Ready To Implement This Blueprint?", cta_heading_style))
+    # Final CTA block
+    story.append(Spacer(1, 18))
     story.append(
         Paragraph(
-            "The fastest way to turn this into more booked jobs, fewer missed calls, "
-            "and 10–20 hours a week back is to walk through it together on a quick call.",
-            cta_body_style,
+            "<b>Next Step:</b> Book a quick strategy call so we can walk through this blueprint "
+            "together and decide what to build first.",
+            body_style,
         )
     )
     story.append(
         Paragraph(
-            "On your strategy call, we’ll prioritize your top wins and decide exactly "
-            "what to build first in the next 30 days.",
-            cta_body_style,
-        )
-    )
-    story.append(Spacer(1, 8))
-    story.append(
-        Paragraph(
-            f'<u>{booking_url}</u>',
-            link_style,
-        )
-    )
-    story.append(
-        Paragraph(
-            "Click the link above to pick a time that works best for you.",
-            cta_body_style,
+            "On the call, we’ll help you prioritize the fastest wins for more booked jobs, "
+            "fewer missed calls, and 10–20 hours back per week.",
+            body_style,
         )
     )
 
@@ -422,7 +375,7 @@ Do NOT include anything else.
 
         generate_pdf(blueprint_text, pdf_path, name, business_name)
 
-        # --------- UPLOAD PDF TO S3 ----------
+        # --------- UPLOAD PDF TO S3 (NO ACLs – bucket policy handles public access) ----------
         if not S3_BUCKET:
             raise RuntimeError("S3_BUCKET_NAME env var is not set in Render")
 
@@ -434,11 +387,10 @@ Do NOT include anything else.
             Key=s3_key,
             ExtraArgs={
                 "ContentType": "application/pdf",
-                "ACL": "public-read",  # allow download by link
             },
         )
 
-        # Short, stable URL for email
+        # Short, stable URL (this is what should be in your email)
         pdf_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
         print("Generated PDF URL:", pdf_url, flush=True)
 
@@ -469,7 +421,7 @@ def serve_pdf(pdf_id):
 
 @app.route("/", methods=["GET"])
 def healthcheck():
-    return "Apex Blueprint API (Render + S3, 3-prompt version with CTA) is running", 200
+    return "Apex Blueprint API (Render + S3, 3-prompt version) is running", 200
 
 
 if __name__ == "__main__":
