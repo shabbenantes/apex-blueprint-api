@@ -1,8 +1,8 @@
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify
 import os
 import uuid
 from openai import OpenAI
-import boto3  # NEW: for S3 upload
+import boto3  # for S3 upload
 
 # PDF generation imports
 from reportlab.lib.pagesizes import letter
@@ -16,7 +16,7 @@ app = Flask(__name__)
 # OpenAI client using env var (set OPENAI_API_KEY in Render)
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-# NEW: S3 client using env vars (set these in Render)
+# S3 client using env vars (set these in Render)
 S3_BUCKET = os.environ.get("S3_BUCKET_NAME")
 S3_REGION = os.environ.get("S3_REGION", "us-east-1")
 s3_client = boto3.client("s3", region_name=S3_REGION)
@@ -120,7 +120,8 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     # Short intro
     story.append(
         Paragraph(
-            "This blueprint shows where your business is currently leaking time and money, and the simplest automation wins to fix it over the next 30 days.",
+            "This blueprint shows where your business is currently leaking time and money, "
+            "and the simplest automation wins to fix it over the next 30 days.",
             body_style,
         )
     )
@@ -153,13 +154,15 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     story.append(Spacer(1, 18))
     story.append(
         Paragraph(
-            "<b>Next Step:</b> Book a quick strategy call so we can walk through this blueprint together and decide what to build first.",
+            "<b>Next Step:</b> Book a quick strategy call so we can walk through this blueprint together "
+            "and decide what to build first.",
             body_style,
         )
     )
     story.append(
         Paragraph(
-            "On the call, we’ll help you prioritize the fastest wins for more booked jobs, fewer missed calls, and 10–20 hours back per week.",
+            "On the call, we’ll help you prioritize the fastest wins for more booked jobs, fewer missed calls, "
+            "and 10–20 hours back per week.",
             body_style,
         )
     )
@@ -300,7 +303,8 @@ Examples of good titles:
 
 **What’s included in this win:**
 - 3–5 bullets in plain English, describing what the automation actually does
-  (for example: instant text replies, lead follow-up messages, automatic reminders, after-hours handling)
+  (for example: instant text replies, lead follow-up messages,
+   automatic reminders, after-hours handling)
 
 Do NOT explain how to build anything. Only what it does and why it matters.
 
@@ -382,35 +386,39 @@ Do NOT include anything else.
         pdf_id = uuid.uuid4().hex
         pdf_filename = f"blueprint_{pdf_id}.pdf"
         pdf_dir = "/tmp"
+        os.makedirs(pdf_dir, exist_ok=True)
         pdf_path = os.path.join(pdf_dir, pdf_filename)
 
         generate_pdf(blueprint_text, pdf_path, name, business_name)
 
-        # --------- UPLOAD PDF TO S3 (PERSISTENT) ----------
+        # --------- UPLOAD PDF TO S3 (NO ACLs) ----------
         if not S3_BUCKET:
             raise RuntimeError("S3_BUCKET_NAME env var is not set in Render")
 
         s3_key = f"blueprints/{pdf_filename}"
 
+        # No ACL parameter – works with Block Public ACLs enabled
         s3_client.upload_file(
             Filename=pdf_path,
             Bucket=S3_BUCKET,
             Key=s3_key,
-            ExtraArgs={
-                "ContentType": "application/pdf",
-                "ACL": "public-read",  # make the file visible by link
-            },
+            ExtraArgs={"ContentType": "application/pdf"},
         )
 
-        # Public S3 URL (assuming bucket allows public-read via ACL)
-        pdf_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
+        # Create a pre-signed URL so the user can open the PDF via email
+        # (expiration in seconds – here: 7 days)
+        pdf_url = s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": S3_BUCKET, "Key": s3_key},
+            ExpiresIn=7 * 24 * 60 * 60,
+        )
 
         return jsonify(
             {
                 "success": True,
                 "blueprint": blueprint_text,   # full document
                 "summary": summary_section,    # first sections only
-                "pdf_url": pdf_url,            # 🔥 S3 link that won't disappear
+                "pdf_url": pdf_url,            # S3 link that won't disappear
                 "name": name,
                 "email": email,
                 "business_name": business_name,
@@ -429,7 +437,7 @@ Do NOT include anything else.
 
 
 # --------------------------------------------------------------------
-# (Optional) /pdf endpoint still here, but now unused
+# Legacy /pdf endpoint (no longer used for new blueprints)
 # --------------------------------------------------------------------
 @app.route("/pdf/<pdf_id>", methods=["GET"])
 def serve_pdf(pdf_id):
