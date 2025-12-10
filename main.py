@@ -375,7 +375,7 @@ Do NOT include anything else.
 
         generate_pdf(blueprint_text, pdf_path, name, business_name)
 
-        # --------- UPLOAD PDF TO S3 (simple public URL) ----------
+        # --------- UPLOAD PDF TO S3 (NO ACLs – bucket policy handles public access) ----------
         if not S3_BUCKET:
             raise RuntimeError("S3_BUCKET_NAME env var is not set in Render")
 
@@ -387,7 +387,6 @@ Do NOT include anything else.
             Key=s3_key,
             ExtraArgs={
                 "ContentType": "application/pdf",
-                "ACL": "public-read",  # allow download by link
             },
         )
 
