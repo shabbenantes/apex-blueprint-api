@@ -1,8 +1,9 @@
 from flask import Flask, request, jsonify
 import os
 import uuid
+
 from openai import OpenAI
-import boto3  # for S3 upload
+import boto3
 
 # PDF generation imports
 from reportlab.lib.pagesizes import letter
@@ -13,12 +14,16 @@ from reportlab.lib import colors
 
 app = Flask(__name__)
 
-# OpenAI client using env var (set OPENAI_API_KEY in Render)
+# ---------- OpenAI ----------
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-# S3 client using env vars (set these in Render)
+# ---------- S3 CONFIG ----------
+# Make sure these are set in Render:
+#   S3_BUCKET_NAME = apex-blueprints-prod   (or your actual bucket name)
+#   S3_REGION      = us-east-2             (Ohio – matches your screenshots)
 S3_BUCKET = os.environ.get("S3_BUCKET_NAME")
-S3_REGION = os.environ.get("S3_REGION", "us-east-1")
+S3_REGION = os.environ.get("S3_REGION", "us-east-2")
+
 s3_client = boto3.client("s3", region_name=S3_REGION)
 
 
@@ -108,7 +113,7 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     story.append(Paragraph("30-Day Automation Roadmap", small_label_style))
     story.append(Spacer(1, 18))
 
-    # Simple horizontal rule effect
+    # Simple horizontal rule
     story.append(
         Paragraph(
             "<para alignment='center'><font size=8 color='#CCCCCC'>────────────────────────────</font></para>",
@@ -154,15 +159,15 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     story.append(Spacer(1, 18))
     story.append(
         Paragraph(
-            "<b>Next Step:</b> Book a quick strategy call so we can walk through this blueprint together "
-            "and decide what to build first.",
+            "<b>Next Step:</b> Book a quick strategy call so we can walk through this blueprint "
+            "together and decide what to build first.",
             body_style,
         )
     )
     story.append(
         Paragraph(
-            "On the call, we’ll help you prioritize the fastest wins for more booked jobs, fewer missed calls, "
-            "and 10–20 hours back per week.",
+            "On the call, we’ll help you prioritize the fastest wins for more booked jobs, "
+            "fewer missed calls, and 10–20 hours back per week.",
             body_style,
         )
     )
@@ -182,11 +187,10 @@ def run_blueprint():
     """
     data = request.get_json(force=True) or {}
 
-    # Try to pull out contact info from typical payload shapes
+    # Contact + form info
     contact = data.get("contact", {}) or data.get("contact_data", {})
     form_fields = data.get("form_fields", {}) or data.get("form", {}) or {}
 
-    # Safe fallbacks so it never crashes if a key is missing
     name = (
         contact.get("first_name")
         or contact.get("firstName")
@@ -201,13 +205,11 @@ def run_blueprint():
         or ""
     )
 
-    # Keep raw form fields as a string so the model sees everything
-    raw_form_text_lines = []
-    for key, value in form_fields.items():
-        raw_form_text_lines.append(f"{key}: {value}")
+    # Raw form text for the model
+    raw_form_text_lines = [f"{k}: {v}" for k, v in form_fields.items()]
     raw_form_text = "\n".join(raw_form_text_lines) if raw_form_text_lines else "N/A"
 
-    # --------- SHARED CONTEXT FOR ALL PROMPTS ----------
+    # --------- SHARED CONTEXT ----------
     shared_context = f"""
 You are APEX AI, a business automation consultant for home service companies.
 Your job is to create a clean, premium, easy-to-read AI Automation Blueprint
@@ -276,7 +278,7 @@ Do NOT include anything else. Start directly with "# AI Automation Blueprint".
             input=prompt_1,
         )
         part1_text = resp1.output[0].content[0].text
-        summary_section = part1_text.strip()  # used in the email
+        summary_section = part1_text.strip()
 
         # --------- PROMPT 2: Top Wins + Scorecard ----------
         prompt_2 = f"""{shared_context}
@@ -289,11 +291,6 @@ Continue the numbering from the previous content.
 For each win, follow this structure:
 
 ### WIN: Short, outcome-focused title
-Examples of good titles:
-- Never Miss Another Call
-- Faster Booked Jobs
-- Follow-Up That Never Stops
-- More Reviews on Autopilot
 
 **What this fixes in your business:**
 - 2–4 bullets describing the specific business problem
@@ -303,8 +300,7 @@ Examples of good titles:
 
 **What’s included in this win:**
 - 3–5 bullets in plain English, describing what the automation actually does
-  (for example: instant text replies, lead follow-up messages,
-   automatic reminders, after-hours handling)
+  (for example: instant text replies, lead follow-up messages, automatic reminders, after-hours handling)
 
 Do NOT explain how to build anything. Only what it does and why it matters.
 
@@ -338,16 +334,9 @@ Break the next 30 days into 4 weeks.
 For each week, give 3–4 simple bullets.
 
 ### Week 1 — Stabilize the Business
-Focus on fixing the biggest leaks first (missed calls, slow response, lost leads).
-
 ### Week 2 — Increase Booked Jobs
-Focus on follow-up, no-shows, and response times.
-
 ### Week 3 — Build Customer Experience
-Focus on reviews, rebooking, and customer communication.
-
 ### Week 4 — Scale and Optimize
-Focus on adding a bit more automation and better visibility.
 
 Use simple, non-technical bullets for each week.
 
@@ -375,50 +364,43 @@ Do NOT include anything else.
 
         # --------- COMBINE ALL PARTS ----------
         blueprint_text = "\n\n".join(
-            [
-                part1_text.strip(),
-                part2_text.strip(),
-                part3_text.strip(),
-            ]
+            [part1_text.strip(), part2_text.strip(), part3_text.strip()]
         ).strip()
 
         # --------- GENERATE PDF LOCALLY ----------
         pdf_id = uuid.uuid4().hex
         pdf_filename = f"blueprint_{pdf_id}.pdf"
         pdf_dir = "/tmp"
-        os.makedirs(pdf_dir, exist_ok=True)
         pdf_path = os.path.join(pdf_dir, pdf_filename)
 
         generate_pdf(blueprint_text, pdf_path, name, business_name)
 
-        # --------- UPLOAD PDF TO S3 (NO ACLs) ----------
+        # --------- UPLOAD PDF TO S3 (simple public URL) ----------
         if not S3_BUCKET:
             raise RuntimeError("S3_BUCKET_NAME env var is not set in Render")
 
         s3_key = f"blueprints/{pdf_filename}"
 
-        # No ACL parameter – works with Block Public ACLs enabled
         s3_client.upload_file(
             Filename=pdf_path,
             Bucket=S3_BUCKET,
             Key=s3_key,
-            ExtraArgs={"ContentType": "application/pdf"},
+            ExtraArgs={
+                "ContentType": "application/pdf",
+                "ACL": "public-read",  # allow download by link
+            },
         )
 
-        # Create a pre-signed URL so the user can open the PDF via email
-        # (expiration in seconds – here: 7 days)
-        pdf_url = s3_client.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": S3_BUCKET, "Key": s3_key},
-            ExpiresIn=7 * 24 * 60 * 60,
-        )
+        # Short, stable URL (this is what should be in your email)
+        pdf_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
+        print("Generated PDF URL:", pdf_url, flush=True)
 
         return jsonify(
             {
                 "success": True,
-                "blueprint": blueprint_text,   # full document
-                "summary": summary_section,    # first sections only
-                "pdf_url": pdf_url,            # S3 link that won't disappear
+                "blueprint": blueprint_text,
+                "summary": summary_section,
+                "pdf_url": pdf_url,
                 "name": name,
                 "email": email,
                 "business_name": business_name,
@@ -426,25 +408,15 @@ Do NOT include anything else.
         )
 
     except Exception as e:
-        # Log the error to Render's logs
         print("Error generating blueprint:", e, flush=True)
-        return jsonify(
-            {
-                "success": False,
-                "error": str(e),
-            }
-        ), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 # --------------------------------------------------------------------
-# Legacy /pdf endpoint (no longer used for new blueprints)
+# Legacy /pdf route (not used now)
 # --------------------------------------------------------------------
 @app.route("/pdf/<pdf_id>", methods=["GET"])
 def serve_pdf(pdf_id):
-    """
-    Legacy route. PDFs are now stored on S3 instead of local /tmp.
-    Kept only so old links don't 500, but they won't find files after reboot.
-    """
     return "PDFs are now stored on S3.", 410
 
 
