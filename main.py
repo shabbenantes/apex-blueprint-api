@@ -26,13 +26,6 @@ S3_REGION = os.environ.get("S3_REGION", "us-east-2")
 
 s3_client = boto3.client("s3", region_name=S3_REGION)
 
-# ---------- BOOKING LINK ----------
-# You can override this in Render by setting BOOKING_URL env var.
-BOOKING_URL = os.environ.get(
-    "BOOKING_URL",
-    "https://api.leadconnectorhq.com/widget/bookings/automation-strategy-call-1",
-)
-
 
 # --------------------------------------------------------------------
 # PDF GENERATION
@@ -91,27 +84,6 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         leading=14,
         textColor=colors.HexColor("#222222"),
         spaceAfter=6,
-    )
-
-    cta_style = ParagraphStyle(
-        "CTAStyle",
-        parent=styles["Heading2"],
-        fontName="Helvetica-Bold",
-        fontSize=12,
-        alignment=TA_CENTER,
-        textColor=colors.HexColor("#0A1A2F"),
-        spaceBefore=18,
-        spaceAfter=8,
-    )
-
-    cta_link_style = ParagraphStyle(
-        "CTALinkStyle",
-        parent=styles["BodyText"],
-        fontName="Helvetica-Bold",
-        fontSize=11,
-        alignment=TA_CENTER,
-        textColor=colors.HexColor("#0A5FD1"),  # blue link
-        spaceAfter=4,
     )
 
     doc = SimpleDocTemplate(
@@ -183,24 +155,19 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
             # Render bullets and normal paragraphs
             story.append(Paragraph(stripped.replace("\n", "<br/>"), body_style))
 
-    # ------- FINAL CTA BLOCK INSIDE THE PDF -------
+    # Final CTA block
     story.append(Spacer(1, 18))
     story.append(
         Paragraph(
-            "Ready to turn this blueprint into real booked jobs, fewer missed calls, and 10–20 hours back per week?",
-            cta_style,
+            "<b>Next Step:</b> Book a quick strategy call so we can walk through this blueprint "
+            "together and decide what to build first.",
+            body_style,
         )
     )
     story.append(
         Paragraph(
-            f"<link href='{BOOKING_URL}' color='#0A5FD1'>Click here to book your free Automation Strategy Call</link>",
-            cta_link_style,
-        )
-    )
-    story.append(
-        Paragraph(
-            "On this call, we’ll walk through your blueprint together, choose the fastest wins, "
-            "and map out exactly what to automate first.",
+            "On the call, we’ll help you prioritize the fastest wins for more booked jobs, "
+            "fewer missed calls, and 10–20 hours back per week.",
             body_style,
         )
     )
