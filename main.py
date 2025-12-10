@@ -20,14 +20,13 @@ client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 # ---------- S3 CONFIG ----------
 # Make sure these are set in Render:
 #   S3_BUCKET_NAME = apex-blueprints-prod   (or your actual bucket name)
-#   S3_REGION      = us-east-2             (Ohio – matches your screenshots)
+#   S3_REGION      = us-east-2             (Ohio)
 S3_BUCKET = os.environ.get("S3_BUCKET_NAME")
 S3_REGION = os.environ.get("S3_REGION", "us-east-2")
 
 s3_client = boto3.client("s3", region_name=S3_REGION)
 
-# ---------- BOOKING LINK ----------
-# You can override this in Render by setting BOOKING_URL env var.
+# Booking link used in the PDF CTA
 BOOKING_URL = os.environ.get(
     "BOOKING_URL",
     "https://api.leadconnectorhq.com/widget/bookings/automation-strategy-call-1",
@@ -37,9 +36,16 @@ BOOKING_URL = os.environ.get(
 # --------------------------------------------------------------------
 # PDF GENERATION
 # --------------------------------------------------------------------
-def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: str):
+def generate_pdf(
+    blueprint_text: str,
+    pdf_path: str,
+    name: str,
+    business_name: str,
+    booking_url: str | None = None,
+):
     """
-    Turn the blueprint text into a clean, branded PDF with clearer sections.
+    Turn the blueprint text into a clean, branded PDF with clearer sections
+    and a clear booking CTA at the end.
     """
     styles = getSampleStyleSheet()
 
@@ -91,27 +97,6 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         leading=14,
         textColor=colors.HexColor("#222222"),
         spaceAfter=6,
-    )
-
-    cta_style = ParagraphStyle(
-        "CTAStyle",
-        parent=styles["Heading2"],
-        fontName="Helvetica-Bold",
-        fontSize=12,
-        alignment=TA_CENTER,
-        textColor=colors.HexColor("#0A1A2F"),
-        spaceBefore=18,
-        spaceAfter=8,
-    )
-
-    cta_link_style = ParagraphStyle(
-        "CTALinkStyle",
-        parent=styles["BodyText"],
-        fontName="Helvetica-Bold",
-        fontSize=11,
-        alignment=TA_CENTER,
-        textColor=colors.HexColor("#0A5FD1"),  # blue link
-        spaceAfter=4,
     )
 
     doc = SimpleDocTemplate(
@@ -183,39 +168,44 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
             # Render bullets and normal paragraphs
             story.append(Paragraph(stripped.replace("\n", "<br/>"), body_style))
 
-    # ------- FINAL CTA BLOCK INSIDE THE PDF -------
-    story.append(Spacer(1, 18))
+    # ------- BOOKING CTA AT BOTTOM -------
+    story.append(Spacer(1, 24))
     story.append(
         Paragraph(
-            "Ready to turn this blueprint into real booked jobs, fewer missed calls, and 10–20 hours back per week?",
-            cta_style,
-        )
-    )
-    story.append(
-        Paragraph(
-            f"<link href='{BOOKING_URL}' color='#0A5FD1'>Click here to book your free Automation Strategy Call</link>",
-            cta_link_style,
-        )
-    )
-    story.append(
-        Paragraph(
-            "On this call, we’ll walk through your blueprint together, choose the fastest wins, "
-            "and map out exactly what to automate first.",
+            "<b>Next Step:</b> Book a quick strategy call so we can walk through this blueprint "
+            "together and decide what to build first.",
             body_style,
         )
     )
+    story.append(
+        Paragraph(
+            "On the call, we’ll help you prioritize the fastest wins for more booked jobs, "
+            "fewer missed calls, and 10–20 hours back per week.",
+            body_style,
+        )
+    )
+
+    if booking_url:
+        story.append(Spacer(1, 12))
+        # Simple link-style CTA
+        story.append(
+            Paragraph(
+                f"<font color='#0A66C2'><a href='{booking_url}'>Click here to book your Automation Strategy Call</a></font>",
+                body_style,
+            )
+        )
 
     doc.build(story)
 
 
 # --------------------------------------------------------------------
-# /run – 3-PROMPT BLUEPRINT GENERATION
+# /run – SINGLE-PROMPT BLUEPRINT GENERATION
 # --------------------------------------------------------------------
 @app.route("/run", methods=["POST"])
 def run_blueprint():
     """
     Called by your automation system when the form is submitted.
-    Takes the contact + form answers, generates a blueprint in 3 AI calls,
+    Takes the contact + form answers, generates a blueprint in ONE AI call,
     generates a PDF, uploads it to S3, and returns everything as JSON.
     """
     data = request.get_json(force=True) or {}
@@ -242,8 +232,8 @@ def run_blueprint():
     raw_form_text_lines = [f"{k}: {v}" for k, v in form_fields.items()]
     raw_form_text = "\n".join(raw_form_text_lines) if raw_form_text_lines else "N/A"
 
-    # --------- SHARED CONTEXT ----------
-    shared_context = f"""
+    # --------- SINGLE PROMPT ----------
+    prompt = f"""
 You are APEX AI, a business automation consultant for home service companies.
 Your job is to create a clean, premium, easy-to-read AI Automation Blueprint
 based on the owner's answers.
@@ -254,7 +244,7 @@ Business name: {business_name if business_name else "Not specified"}
 Owner's raw answers:
 {raw_form_text}
 
-STYLE RULES (apply to ALL sections you write):
+STYLE RULES:
 - Use SIMPLE business language (no jargon: no “CRM”, no “API”, no “backend”)
 - Be extremely clear
 - Be structured and visually clean
@@ -268,14 +258,8 @@ STYLE RULES (apply to ALL sections you write):
 - Talk directly to the owner using “you” and “your business”
 - Prefer bullet points over long paragraphs
 - Keep sections tight, clean, and easy to scan
-"""
 
-    try:
-        # --------- PROMPT 1: Summary + What You Told Me ----------
-        prompt_1 = f"""{shared_context}
-
-Write ONLY the following sections in Markdown:
-
+---------------------------------------------------------
 # AI Automation Blueprint
 
 ## 1. Your 1-Page Business Summary
@@ -288,8 +272,8 @@ Write 3–6 short bullets that clearly describe:
 
 This should feel like: "You really understand my situation."
 
+---------------------------------------------------------
 ## 2. What You Told Me
-Rewrite their answers into clean categories:
 
 ### Your Goals
 - 2–4 bullets summarizing their main goals
@@ -303,22 +287,7 @@ Rewrite their answers into clean categories:
 ### Opportunities You’re Not Taking Advantage Of
 - 3–5 bullets showing where they could be getting more value
 
-Do NOT include anything else. Start directly with "# AI Automation Blueprint".
-"""
-
-        resp1 = client.responses.create(
-            model="gpt-4.1-mini",
-            input=prompt_1,
-        )
-        part1_text = resp1.output[0].content[0].text
-        summary_section = part1_text.strip()
-
-        # --------- PROMPT 2: Top Wins + Scorecard ----------
-        prompt_2 = f"""{shared_context}
-
-Write ONLY the following sections in Markdown.
-Continue the numbering from the previous content.
-
+---------------------------------------------------------
 ## 3. Your Top 3 Automation Wins
 
 For each win, follow this structure:
@@ -337,6 +306,7 @@ For each win, follow this structure:
 
 Do NOT explain how to build anything. Only what it does and why it matters.
 
+---------------------------------------------------------
 ## 4. Your Automation Scorecard (0–100)
 
 Give the business a simple "automation maturity score" from 0–100.
@@ -346,21 +316,7 @@ Then write 4–6 bullets that explain:
 - What this score means in plain English
 - What is most urgent to fix
 
-Do NOT include anything else.
-"""
-
-        resp2 = client.responses.create(
-            model="gpt-4.1-mini",
-            input=prompt_2,
-        )
-        part2_text = resp2.output[0].content[0].text
-
-        # --------- PROMPT 3: 30-Day Plan + Final Recommendations ----------
-        prompt_3 = f"""{shared_context}
-
-Write ONLY the following sections in Markdown.
-Continue the numbering from the previous content.
-
+---------------------------------------------------------
 ## 5. Your 30-Day Game Plan
 
 Break the next 30 days into 4 weeks.
@@ -373,6 +329,7 @@ For each week, give 3–4 simple bullets.
 
 Use simple, non-technical bullets for each week.
 
+---------------------------------------------------------
 ## 6. Final Recommendations
 
 Write 5–7 short bullets with clear guidance, such as:
@@ -385,20 +342,21 @@ Write 5–7 short bullets with clear guidance, such as:
 Do NOT sell anything directly.
 Do NOT mention this being an "AI" blueprint.
 Keep the tone calm, confident, and supportive.
-
-Do NOT include anything else.
 """
 
-        resp3 = client.responses.create(
+    try:
+        response = client.responses.create(
             model="gpt-4.1-mini",
-            input=prompt_3,
+            input=prompt,
         )
-        part3_text = resp3.output[0].content[0].text
 
-        # --------- COMBINE ALL PARTS ----------
-        blueprint_text = "\n\n".join(
-            [part1_text.strip(), part2_text.strip(), part3_text.strip()]
-        ).strip()
+        blueprint_text = response.output[0].content[0].text
+
+        # Use everything before "## 3. Your Top 3 Automation Wins" as the summary
+        summary_section = blueprint_text
+        marker = "## 3. Your Top 3 Automation Wins"
+        if marker in blueprint_text:
+            summary_section = blueprint_text.split(marker, 1)[0].strip()
 
         # --------- GENERATE PDF LOCALLY ----------
         pdf_id = uuid.uuid4().hex
@@ -406,9 +364,9 @@ Do NOT include anything else.
         pdf_dir = "/tmp"
         pdf_path = os.path.join(pdf_dir, pdf_filename)
 
-        generate_pdf(blueprint_text, pdf_path, name, business_name)
+        generate_pdf(blueprint_text, pdf_path, name, business_name, BOOKING_URL)
 
-        # --------- UPLOAD PDF TO S3 (NO ACLs – bucket policy handles public access) ----------
+        # --------- UPLOAD PDF TO S3 ----------
         if not S3_BUCKET:
             raise RuntimeError("S3_BUCKET_NAME env var is not set in Render")
 
@@ -420,10 +378,10 @@ Do NOT include anything else.
             Key=s3_key,
             ExtraArgs={
                 "ContentType": "application/pdf",
+                "ACL": "public-read",  # allow download by link
             },
         )
 
-        # Short, stable URL (this is what should be in your email)
         pdf_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
         print("Generated PDF URL:", pdf_url, flush=True)
 
@@ -454,7 +412,7 @@ def serve_pdf(pdf_id):
 
 @app.route("/", methods=["GET"])
 def healthcheck():
-    return "Apex Blueprint API (Render + S3, 3-prompt version) is running", 200
+    return "Apex Blueprint API (Render + S3, single-prompt version) is running", 200
 
 
 if __name__ == "__main__":
