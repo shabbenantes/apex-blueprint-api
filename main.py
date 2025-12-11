@@ -18,6 +18,9 @@ app = Flask(__name__)
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # ---------- S3 CONFIG ----------
+# Make sure these are set in Render:
+#   S3_BUCKET_NAME  = apex-blueprints-prod   (your bucket name)
+#   S3_REGION       = us-east-2              (Ohio for you)
 S3_BUCKET = os.environ.get("S3_BUCKET_NAME")
 S3_REGION = os.environ.get("S3_REGION", "us-east-2")
 
@@ -120,17 +123,18 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
 
     # ------- COVER BLOCK -------
     story.append(Paragraph("Apex Automation", title_style))
-    story.append(
-        Paragraph("AI Automation Blueprint for Your Service Business", tagline_style)
-    )
 
-    # NEW: include business name + owner when possible
-    if business_name and name:
-        owner_line = f"Prepared for: {business_name} – {name}"
-    elif business_name:
-        owner_line = f"Prepared for: {business_name}"
+    # Show business name on the cover if we have it
+    if business_name:
+        cover_subtitle = f"AI Automation Blueprint for {business_name}"
     else:
-        owner_line = f"Prepared for: {name or 'Your Business Owner'}"
+        cover_subtitle = "AI Automation Blueprint for Your Service Business"
+
+    story.append(Paragraph(cover_subtitle, tagline_style))
+
+    owner_line = f"Prepared for: {name if name else 'Your Business Owner'}"
+    if business_name:
+        owner_line += f"  •  Business: {business_name}"
 
     story.append(Paragraph(owner_line, small_label_style))
     story.append(Paragraph("30-Day Automation Roadmap", small_label_style))
@@ -139,9 +143,7 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     # Simple horizontal rule
     story.append(
         Paragraph(
-            "<para alignment='center'><font size=8 color='#CCCCCC'>"
-            "────────────────────────────"
-            "</font></para>",
+            "<para alignment='center'><font size=8 color='#CCCCCC'>────────────────────────────</font></para>",
             small_label_style,
         )
     )
@@ -165,12 +167,14 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
             story.append(Spacer(1, 4))
             continue
 
+        # Treat obvious section labels as headings
+        upper = line.upper()
         if (
-            line.upper().startswith("TITLE:")
-            or line.upper().startswith("SECTION ")
-            or line.upper().startswith("WIN ")
-            or line.upper().startswith("WEEK ")
-            or line.upper().startswith("SUBSECTION:")
+            upper.startswith("TITLE:")
+            or upper.startswith("SECTION ")
+            or upper.startswith("WIN ")
+            or upper.startswith("WEEK ")
+            or upper.startswith("SUBSECTION:")
         ):
             story.append(Paragraph(line, heading_style))
         else:
@@ -179,7 +183,10 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     # ------- CTA BLOCK AT END -------
     story.append(Spacer(1, 20))
     story.append(
-        Paragraph("Next Step: Book Your Automation Strategy Call", cta_heading_style)
+        Paragraph(
+            "Next Step: Book Your Automation Strategy Call",
+            cta_heading_style,
+        )
     )
     story.append(
         Paragraph(
@@ -199,218 +206,286 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
 
 
 # --------------------------------------------------------------------
-# /run – SINGLE-PROMPT BLUEPRINT GENERATION (MORE TAILORED)
+# /run – TWO-STEP (THINK → WRITE) BLUEPRINT GENERATION
 # --------------------------------------------------------------------
 @app.route("/run", methods=["POST"])
 def run_blueprint():
+    """
+    Called by your automation system when the form is submitted.
+    1) Takes the contact + form answers.
+    2) First AI call: turns answers into a structured brief (no guessing).
+    3) Second AI call: turns the brief into the final blueprint.
+    4) Generates a PDF, uploads it to S3, and returns JSON.
+    """
     data = request.get_json(force=True) or {}
 
     # Contact + form info
     contact = data.get("contact", {}) or data.get("contact_data", {})
     form_fields = data.get("form_fields", {}) or data.get("form", {}) or {}
 
+    # Basic contact details
     name = (
         contact.get("first_name")
         or contact.get("firstName")
         or contact.get("name")
+        or form_fields.get("Full Name")
         or "there"
     )
-    email = contact.get("email", "")
+    email = contact.get("email") or form_fields.get("Email") or ""
+    phone = contact.get("phone") or form_fields.get("Phone") or ""
+
+    # Explicitly pull your 12 questions (falling back to generic keys just in case)
     business_name = (
-        form_fields.get("business_name")
-        or form_fields.get("Business Name")
-        or form_fields.get("business")
+        form_fields.get("Business Name")
+        or form_fields.get("business_name")
+        or ""
+    )
+    services_offered = (
+        form_fields.get("Services Offered")
+        or form_fields.get("services_offered")
+        or ""
+    )
+    lead_response_speed = (
+        form_fields.get("Lead Response Speed")
+        or form_fields.get("lead_response_speed")
+        or ""
+    )
+    leads_per_week = (
+        form_fields.get("Leads Per Week")
+        or form_fields.get("leads_per_week")
+        or ""
+    )
+    jobs_per_week = (
+        form_fields.get("Jobs Per Week")
+        or form_fields.get("jobs_per_week")
+        or ""
+    )
+    contact_methods = (
+        form_fields.get("Customer Contact Methods")
+        or form_fields.get("customer_contact_methods")
+        or ""
+    )
+    biggest_frustration = (
+        form_fields.get("Biggest Frustration")
+        or form_fields.get("biggest_frustration")
+        or ""
+    )
+    time_loss_areas = (
+        form_fields.get("Time Loss Areas")
+        or form_fields.get("time_loss_areas")
+        or ""
+    )
+    main_goals = (
+        form_fields.get("Main Goals")
+        or form_fields.get("main_goals")
+        or ""
+    )
+    desired_automations = (
+        form_fields.get("Desired Automations")
+        or form_fields.get("desired_automations")
+        or ""
+    )
+    current_software = (
+        form_fields.get("Current Software")
+        or form_fields.get("current_software")
+        or ""
+    )
+    ideal_customer_experience = (
+        form_fields.get("Ideal Customer Experience")
+        or form_fields.get("ideal_customer_experience")
         or ""
     )
 
-    # Pull each custom field explicitly (using your labels)
-    services_offered = form_fields.get("services_offered", "")  # Services Offered
-    lead_response_speed = form_fields.get("lead_response_speed", "")  # Lead Response Speed
-    leads_per_week = form_fields.get("leads_per_week", "")  # Leads Per Week
-    jobs_per_week = form_fields.get("jobs_per_week", "")  # Jobs Per Week
-    contact_methods = form_fields.get("customer_contact_methods", "")  # Customer Contact Methods
-    biggest_frustration = form_fields.get("biggest_frustration", "")  # Biggest Frustration
-    time_loss_areas = form_fields.get("time_loss_areas", "")  # Time Loss Areas
-    main_goals = form_fields.get("main_goals", "")  # Main Goals
-    desired_automations = form_fields.get("desired_automations", "")  # Desired Automations
-    current_software = form_fields.get("current_software", "")  # Current Software
-    ideal_experience = form_fields.get("ideal_customer_experience", "")  # Ideal Customer Experience
+    # Also keep a raw dump for debugging if needed
+    raw_form_text_lines = [f"{k}: {v}" for k, v in form_fields.items()]
+    raw_form_text = "\n".join(raw_form_text_lines) if raw_form_text_lines else "N/A"
 
-    # --------- SINGLE PROMPT (more literal + no guessing) ----------
-    prompt = f"""
-You are APEX AI, a senior automation consultant who writes premium,
-clear, confidence-building business blueprints for home-service owners.
+    # --------- STEP 1: THINK – CREATE A STRUCTURED BRIEF ----------
+    think_prompt = f"""
+You are APEX AI, a senior automation consultant for home-service businesses.
 
-Your goal: create a clean, structured, easy-to-read written blueprint
-that will later be inserted into a Google Docs template and exported as
-a polished PDF.
+You will be given raw intake answers from a blueprint form.
+Your job in THIS STEP is ONLY to create a clear, structured BRIEF.
+Another AI call will later write the final blueprint from this brief.
 
-ABSOLUTE RULES (VERY IMPORTANT):
-- Use ONLY the information given below about this business.
-- DO NOT invent details that are not clearly supported by the answers.
-- DO NOT say “likely”, “seems”, “appears”, or anything that sounds uncertain.
-- State things as facts based on what they wrote.
-- If something is not mentioned, simply don’t talk about it.
-- Reuse their own words where helpful, but clean up grammar and make it clearer.
-- Keep every section short, concrete, and easy to scan.
-- Use simple business language (no tech jargon like “CRM”, “APIs”, “backend”).
-- Do NOT use markdown symbols (#, ##, *, bullets with hyphens, etc.).
-- Do NOT include emojis.
-- Speak directly to the owner using “you” and “your business”.
-- Maintain the same structure every time so the PDF layout stays consistent.
+DO NOT write the final blueprint.
+DO NOT add generic assumptions.
+DO NOT say "likely", "probably", or "appears to".
+If something is not mentioned, say "Not mentioned" instead of guessing.
 
-------------------------------------------------------------
-INPUT DATA FROM INTAKE FORM
+Use the exact wording from the owner wherever it helps.
+You can lightly clean typos, but keep their meaning.
 
-Owner name: {name}
-Business name: {business_name}
+-------------------------
+INTAKE ANSWERS
+Owner Name: {name}
+Email: {email}
+Phone: {phone}
 
-Services offered:
-{services_offered}
+Business Name: {business_name}
+Services Offered: {services_offered}
+Lead Response Speed: {lead_response_speed}
+Leads Per Week: {leads_per_week}
+Jobs Per Week: {jobs_per_week}
+Customer Contact Methods: {contact_methods}
+Biggest Frustration: {biggest_frustration}
+Time Loss Areas: {time_loss_areas}
+Main Goals: {main_goals}
+Desired Automations: {desired_automations}
+Current Software: {current_software}
+Ideal Customer Experience: {ideal_customer_experience}
 
-Lead response speed (how fast they respond now):
-{lead_response_speed}
+Raw Form Dump (for extra context):
+{raw_form_text}
+-------------------------
 
-Leads per week:
-{leads_per_week}
+Now create a structured brief using EXACTLY this format:
 
-Jobs per week:
-{jobs_per_week}
+BUSINESS SUMMARY
+- One sentence describing what the business does, based ONLY on "Services Offered" and "Business Name".
+- Bullet about typical customer type, ONLY if it is clearly stated.
+- Bullet about current lead + job volume using the actual numbers (Leads Per Week, Jobs Per Week).
 
-Customer contact methods:
-{contact_methods}
+GOALS
+- 3–6 bullets summarizing "Main Goals" in plain English.
+- If goals are vague, clarify them gently but stay close to their wording.
 
-Biggest frustration:
-{biggest_frustration}
+PAIN POINTS
+- 3–6 bullets combining "Biggest Frustration" and anything relevant from "Time Loss Areas".
+- Use their own phrases in quotes where helpful.
 
-Where time is being lost:
-{time_loss_areas}
+TIME LOSS AREAS
+- 3–5 bullets that clearly describe where time is being wasted, based ONLY on their answers.
 
-Main goals for the next 6–12 months:
-{main_goals}
+DESIRED AUTOMATIONS
+- 3–6 bullets.
+- If they say they are "not sure" or "whatever you recommend",
+  write bullets that make reasonable suggestions based on their PAIN POINTS and TIME LOSS AREAS
+  (for example: missed calls, slow follow-up, manual scheduling).
+- Make it VERY clear these are recommendations, not things they already have.
 
-What they’d love to stop doing manually (desired automations):
-{desired_automations}
+CUSTOMER EXPERIENCE
+- 3–5 bullets summarizing "Ideal Customer Experience".
+- Reference contact methods and response speed if mentioned.
 
-Current software/tools:
-{current_software}
+OTHER NOTES
+- Any relevant details from "Current Software" or other fields.
+- If a field is empty, mention "Current Software: Not mentioned" or similar.
+"""
 
-Ideal customer experience:
-{ideal_experience}
-------------------------------------------------------------
+    try:
+        think_response = client.responses.create(
+            model="gpt-4.1-mini",
+            input=think_prompt,
+        )
+        brief_text = think_response.output[0].content[0].text.strip()
+        print("Brief length (chars):", len(brief_text), flush=True)
 
-NOW WRITE THE BLUEPRINT USING THIS EXACT STRUCTURE
-(plain text headings, no markdown):
+        # --------- STEP 2: WRITE – USE BRIEF TO CREATE BLUEPRINT ----------
+        write_prompt = f"""
+You are APEX AI, a senior automation consultant.
 
-TITLE: AI Automation Blueprint
+You will be given a structured BRIEF about a home-service business.
+Using ONLY that brief, write a clear, premium-feeling AI Automation Blueprint.
+
+RULES:
+- Do NOT invent facts that are not in the brief.
+- Do NOT say "likely", "probably", or "appears to".
+- Use the business name and owner’s situation so it feels personal.
+- Use simple business language (no tech jargon).
+- Prefer bullets over long paragraphs.
+- Speak directly to the owner using "you" and "your business".
+- Never mention AI, prompts, surveys, or that this was generated.
+- Keep the structure identical every time so it works well as a template.
+
+-------------------------
+BRIEF
+{brief_text}
+-------------------------
+
+Now write the blueprint in this exact structure and labels:
+
+TITLE: AI Automation Blueprint for {business_name if business_name else "Your Service Business"}
 
 SECTION 1: Quick Snapshot
-Write 4–6 short bullets that:
-- Describe what type of business they run using their services and volume (leads/jobs per week).
-- Call out their biggest frustration and main goals in your own clear words.
-- Describe where they are losing time, using their “time loss areas” and contact methods.
-- Highlight the main opportunities for automation based on their desired automations and current situation.
-
-Every bullet in this section MUST be clearly connected to one or more of:
-services offered, leads per week, jobs per week, biggest frustration,
-time loss areas, desired automations, ideal customer experience.
+- 4–6 bullets that summarize:
+  - What the business does
+  - The main pain points
+  - Where they are losing time or money
+  - The biggest opportunities for automation
+  - Any clear numbers from the brief (like leads/jobs per week)
 
 SECTION 2: What You Told Me
-Rewrite their answers into the following labeled subsections:
 
 Subsection: Your Goals
-Use ONLY their “main goals” and anything related from other answers.
-Summarize into 3–5 bullets in clear, simple language.
+- 3–5 bullets directly reflecting the GOALS section of the brief.
 
 Subsection: Your Challenges
-Use mainly “biggest frustration”, “time loss areas”, and anything that
-sounds like a problem in their answers.
-Write 3–6 bullets that feel very specific to them.
+- 3–6 bullets summarizing the PAIN POINTS.
 
 Subsection: Where Time Is Being Lost
-Use ONLY their “time loss areas”, lead response speed, contact methods,
-and anything that adds detail.
-Write 3–5 bullets that describe where time, focus, or money is being wasted.
+- 3–5 bullets summarizing the TIME LOSS AREAS.
 
 Subsection: Opportunities You’re Not Leveraging Yet
-Use their “desired automations”, “ideal customer experience”, and
-“current software”.
-Write 3–6 bullets that show clear, practical opportunities for automation
-in their exact situation.
+- 3–6 bullets that connect their PAIN POINTS and TIME LOSS AREAS
+  to the DESIRED AUTOMATIONS recommendations in the brief.
 
 SECTION 3: Your Top 3 Automation Wins
-Create three “wins” that are obviously based on their answers.
 
 For each win, write:
 
-WIN 1 – Short outcome-focused title
+WIN 1: [Short outcome-focused title]
 What This Fixes:
-- 2–4 bullets describing the specific problems this win addresses,
-  based on their challenges and time loss areas.
+- 2–4 bullets
 
 What This Does For You:
-- 3–4 bullets describing the benefits in plain language
-  (time saved, fewer headaches, more booked jobs, better experience).
+- 3–4 bullets with benefits (more booked jobs, fewer missed calls, time back, less stress).
 
 What’s Included:
-- 3–5 bullets describing what the automation actually DOES day to day,
-  using their desired automations and contact methods (e.g. faster replies,
-  automatic reminders, better tracking).
+- 3–5 bullets describing simple, easy-to-understand automation actions,
+  clearly based on their situation (e.g. missed calls, manual scheduling, no-shows).
 
-Repeat this structure for WIN 2 and WIN 3.
-Each win should feel different and cover a different cluster of problems.
+Then write WIN 2 and WIN 3 in the same style, focusing on different improvements from the brief.
 
 SECTION 4: Your Automation Scorecard (0–100)
-Give a score between 0 and 100 that fits their current level.
-Base it on:
-- How manual their communication and scheduling are.
-- Whether they’re using any software already.
-- Their goals vs. where they are now.
-
-Then write 4–6 bullets explaining:
-- What they’re already doing well.
-- Where they are weak or at risk.
-- What this score means in simple language.
-- What is most important to fix first.
+- Start with: "Your current automation score: X/100" with a reasonable
+  score based ONLY on the brief (do not say how you calculated it).
+- Then 4–6 bullets explaining:
+  - Where they are strong
+  - Where they are weak
+  - What this score means in plain English
+  - What is most important to fix first
 
 SECTION 5: Your 30-Day Action Plan
-Break into weekly sections:
 
-Week 1 — Stabilize The Day-To-Day
-Write 3–4 bullets focused on fixing the worst leaks first
-(response speed, missed calls/messages, basic tracking).
+Week 1 — Stabilize
+- 3–4 bullets focused on stopping the biggest leaks (e.g. missed calls, response times).
 
 Week 2 — Increase Booked Jobs
-Write 3–4 bullets focused on follow-up, reminders, and
-making it easier for people to book jobs.
+- 3–4 bullets focused on follow-up and converting more leads to jobs.
 
 Week 3 — Improve Customer Experience
-Write 3–4 bullets focused on communication, updates,
-and matching their “ideal customer experience”.
+- 3–4 bullets focused on communication, updates, and reliability.
 
 Week 4 — Optimize and Prepare to Scale
-Write 3–4 bullets focused on small improvements, better visibility,
-and getting ready to handle more volume without more chaos.
+- 3–4 bullets focused on reporting, consistency, and light optimization.
 
 SECTION 6: Final Recommendations
-Write 5–7 short bullets that:
-- Tell them what to focus on first.
-- Highlight the simple wins that will have the biggest impact.
-- Reassure them they don’t need to fix everything at once.
-- Suggest what they should have ready before a strategy call
-  (examples: logins, examples of messages, simple numbers).
-- Point out their biggest long-term opportunity based on their goals.
+- 5–7 bullets of clear guidance:
+  - What to implement first
+  - What will bring the fastest improvements
+  - What they don’t need to worry about yet
+  - What to bring to a strategy call (examples: key processes, access to current tools)
+  - Where their biggest long-term opportunity is
 
 END OF BLUEPRINT
 """
 
-    try:
-        response = client.responses.create(
+        write_response = client.responses.create(
             model="gpt-4.1-mini",
-            input=prompt,
+            input=write_prompt,
         )
-
-        blueprint_text = response.output[0].content[0].text.strip()
+        blueprint_text = write_response.output[0].content[0].text.strip()
         print("Blueprint length (chars):", len(blueprint_text), flush=True)
 
         # Simple "summary" = everything up through Section 2
@@ -439,7 +514,7 @@ END OF BLUEPRINT
             Key=s3_key,
             ExtraArgs={
                 "ContentType": "application/pdf",
-                "ACL": "public-read",
+                "ACL": "public-read",  # allow download by link
             },
         )
 
@@ -454,6 +529,7 @@ END OF BLUEPRINT
                 "pdf_url": pdf_url,
                 "name": name,
                 "email": email,
+                "phone": phone,
                 "business_name": business_name,
             }
         )
@@ -473,7 +549,7 @@ def serve_pdf(pdf_id):
 
 @app.route("/", methods=["GET"])
 def healthcheck():
-    return "Apex Blueprint API (Render + S3, tailored single-prompt version) is running", 200
+    return "Apex Blueprint API (Render + S3, two-step version) is running", 200
 
 
 if __name__ == "__main__":
