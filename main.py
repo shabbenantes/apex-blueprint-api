@@ -24,6 +24,12 @@ S3_REGION = os.environ.get("S3_REGION", "us-east-2")
 
 s3_client = boto3.client("s3", region_name=S3_REGION)
 
+# ---------- BOOKING LINK (used in PDF CTA) ----------
+BOOKING_URL = os.environ.get(
+    "BOOKING_URL",
+    "https://api.leadconnectorhq.com/widget/bookings/automation-strategy-call-1",
+)
+
 
 # --------------------------------------------------------------------
 # PDF GENERATION
@@ -65,6 +71,7 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         spaceAfter=4,
     )
 
+    # MAIN SECTION HEADINGS – keepWithNext so they don't get stranded
     heading_style = ParagraphStyle(
         "HeadingStyle",
         parent=styles["Heading2"],
@@ -73,8 +80,10 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         textColor=colors.HexColor("#0A1A2F"),
         spaceBefore=14,
         spaceAfter=6,
+        keepWithNext=True,
     )
 
+    # SUBHEADINGS – also keepWithNext
     subheading_style = ParagraphStyle(
         "SubHeadingStyle",
         parent=styles["Heading3"],
@@ -83,6 +92,7 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         textColor=colors.HexColor("#0A1A2F"),
         spaceBefore=10,
         spaceAfter=4,
+        keepWithNext=True,
     )
 
     body_style = ParagraphStyle(
@@ -214,7 +224,7 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
 
         story.append(Paragraph(cleaned, style))
 
-    # ------- CTA BLOCK AT END -------
+    # ------- CTA BLOCK AT END (with real booking link) -------
     story.append(Spacer(1, 20))
     story.append(
         Paragraph("Next Step: Book Your Automation Strategy Call", cta_heading_style)
@@ -229,6 +239,14 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     story.append(
         Paragraph(
             "Use the booking link in your email to pick a time that works best for you.",
+            cta_body_style,
+        )
+    )
+
+    # Clickable booking link in the PDF
+    story.append(
+        Paragraph(
+            f'Click here to book: <u><link href="{BOOKING_URL}">{BOOKING_URL}</link></u>',
             cta_body_style,
         )
     )
@@ -270,7 +288,6 @@ def run_blueprint():
     raw_form_text_lines = [f"{k}: {v}" for k, v in form_fields.items()]
     raw_form_text = "\n".join(raw_form_text_lines) if raw_form_text_lines else "N/A"
 
-    # --------- SINGLE PROMPT (Option A / cleaned headings) ----------
     prompt = f"""
 You are APEX AI, a senior automation consultant who writes premium,
 clear, confidence-building business blueprints for home-service owners.
