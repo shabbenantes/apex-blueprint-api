@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 import os
 import uuid
-import json  # NEW: to pass raw JSON to the model
+import json
 
 from openai import OpenAI
 import boto3
@@ -19,9 +19,6 @@ app = Flask(__name__)
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # ---------- S3 CONFIG ----------
-# Make sure these are set in Render:
-#   S3_BUCKET_NAME  = apex-blueprints-prod   (your bucket name)
-#   S3_REGION       = us-east-2              (Ohio for you)
 S3_BUCKET = os.environ.get("S3_BUCKET_NAME")
 S3_REGION = os.environ.get("S3_REGION", "us-east-2")
 
@@ -198,6 +195,74 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
 
 
 # --------------------------------------------------------------------
+# Helper: extract custom fields from ANY GHL payload shape
+# --------------------------------------------------------------------
+def build_field_lookup(data):
+    """
+    Returns a helper function get_field(label, *aliases) that searches:
+    - contact.customFields[] (most reliable in live workflows)
+    - top-level form_fields dict (older/test payloads)
+    - form_submission.fields[] style payloads
+    """
+    contact = data.get("contact", {}) or data.get("contact_data", {}) or {}
+
+    # 1) contact.customFields -> dict by name
+    custom_fields_list = contact.get("customFields") or contact.get("custom_fields") or []
+    custom_fields_map = {}
+    for cf in custom_fields_list:
+        name = cf.get("name") or cf.get("customFieldName") or cf.get("key")
+        value = cf.get("value") or cf.get("field_value")
+        if name:
+            custom_fields_map[name] = value
+
+    # 2) form_fields dict (some payloads)
+    form_fields = (
+        data.get("form_fields")
+        or data.get("form")
+        or data.get("form_submission", {}).get("form_fields")
+        or {}
+    )
+    if not isinstance(form_fields, dict):
+        form_fields = {}
+
+    # 3) form_submission.fields[] list
+    fields_list = data.get("form_submission", {}).get("fields") or []
+    fields_map = {}
+    for f in fields_list:
+        name = (
+            f.get("name")
+            or f.get("customFieldName")
+            or f.get("key")
+            or f.get("field_key")
+        )
+        value = f.get("value") or f.get("field_value")
+        if name:
+            fields_map[name] = value
+
+    def get_field(label, *aliases):
+        keys = (label,) + aliases
+
+        # check custom_fields
+        for k in keys:
+            if k in custom_fields_map and custom_fields_map[k]:
+                return str(custom_fields_map[k])
+
+        # check form_fields dict
+        for k in keys:
+            if k in form_fields and form_fields[k]:
+                return str(form_fields[k])
+
+        # check fields_map
+        for k in keys:
+            if k in fields_map and fields_map[k]:
+                return str(fields_map[k])
+
+        return ""
+
+    return get_field, contact
+
+
+# --------------------------------------------------------------------
 # /run – SINGLE-PROMPT BLUEPRINT GENERATION
 # --------------------------------------------------------------------
 @app.route("/run", methods=["POST"])
@@ -209,110 +274,55 @@ def run_blueprint():
     """
     data = request.get_json(force=True) or {}
 
-    # ---- Log the raw payload to Render logs (helps if GHL changes shape) ----
+    # Log the raw payload so we can debug shapes if GHL changes again
     print("Incoming payload:", json.dumps(data, indent=2), flush=True)
 
-    # Contact + form info (works with different GHL shapes)
-    contact = data.get("contact", {}) or data.get("contact_data", {}) or {}
+    # Build flexible field getter
+    get_field, contact = build_field_lookup(data)
 
-    # Try a few common places for form fields
-    form_fields = (
-        data.get("form_fields")
-        or data.get("form")
-        or data.get("form_submission", {}).get("form_fields")
-        or {}
-    )
-
-    # Convenience values (based on your current field labels)
+    # --------- BASIC CONTACT INFO ----------
     name = (
         contact.get("full_name")
-        or contact.get("first_name")
-        or contact.get("firstName")
         or contact.get("name")
+        or (contact.get("first_name") and f"{contact.get('first_name')} {contact.get('last_name', '')}".strip())
         or "there"
     )
-    email = contact.get("email", "")
+    email = contact.get("email", "") or get_field("Email", "email")
 
+    # Business name is usually a standard contact/company field OR a form field
     business_name = (
-        form_fields.get("Business Name")
-        or form_fields.get("business_name")
+        contact.get("company_name")
+        or get_field("Business Name", "business_name", "Company", "company")
         or ""
     )
 
-    business_type = (
-        form_fields.get("Business Type")
-        or form_fields.get("business_type")
-        or ""
+    # --------- CUSTOM BLUEPRINT INTAKE FIELDS ----------
+    business_type = get_field("Business Type", "business_type")
+    services_offered = get_field("Services You Offer", "services_offered")
+    ideal_customer = get_field("Ideal Customer", "ideal_customer")
+    bottlenecks = get_field(
+        "Biggest Operational Bottlenecks",
+        "Biggest Operational Bottlencks",  # in case of typo
+        "bottlenecks",
     )
-
-    services_offered = (
-        form_fields.get("Services You Offer")
-        or form_fields.get("services_offered")
-        or ""
+    manual_tasks = get_field(
+        "Manual Tasks You Want Automated",
+        "manual_tasks",
     )
-
-    ideal_customer = (
-        form_fields.get("Ideal Customer")
-        or form_fields.get("ideal_customer")
-        or ""
+    current_software = get_field(
+        "Software You Currently Use",
+        "current_software",
     )
-
-    bottlenecks = (
-        form_fields.get("Biggest Operational Bottlenecks")
-        or form_fields.get("bottlenecks")
-        or ""
+    lead_response_time = get_field(
+        "Average Lead Response Time",
+        "Average Lead Response Time ",
+        "lead_response_time",
     )
-
-    manual_tasks = (
-        form_fields.get("Manual Tasks You Want Automated")
-        or form_fields.get("manual_tasks")
-        or ""
-    )
-
-    current_software = (
-        form_fields.get("Software You Currently Use")
-        or form_fields.get("current_software")
-        or ""
-    )
-
-    lead_response_time = (
-        form_fields.get("Average Lead Response Time")
-        or form_fields.get("lead_response_time")
-        or ""
-    )
-
-    leads_per_week = (
-        form_fields.get("Leads Per Week")
-        or form_fields.get("leads_per_week")
-        or ""
-    )
-
-    jobs_per_week = (
-        form_fields.get("Jobs Per Week")
-        or form_fields.get("jobs_per_week")
-        or ""
-    )
-
-    growth_goals = (
-        form_fields.get("Growth Goals (6–12 months)")
-        or form_fields.get("growth_goals")
-        or ""
-    )
-
-    frustrations = (
-        form_fields.get("What Frustrates You Most")
-        or form_fields.get("frustrations")
-        or ""
-    )
-
-    extra_notes = (
-        form_fields.get("Anything Else We Should Know")
-        or form_fields.get("extra_notes")
-        or ""
-    )
-
-    # Full raw JSON for the model to reference (this is the safety net)
-    raw_json = json.dumps(data, indent=2, ensure_ascii=False)
+    leads_per_week = get_field("Leads Per Week", "leads_per_week")
+    jobs_per_week = get_field("Jobs Per Week", "jobs_per_week")
+    growth_goals = get_field("Growth Goals (6–12 months)", "Growth Goals (6-12 months)", "growth_goals")
+    frustrations = get_field("What Frustrates You Most", "frustrations")
+    extra_notes = get_field("Extra Notes", "Anything Else We Should Know", "extra_notes")
 
     # --------- SINGLE PROMPT ----------
     prompt = f"""
@@ -322,8 +332,8 @@ clear, confidence-building business blueprints for home-service owners.
 Your job is to create a clean, structured, easy-to-read written blueprint
 that feels clearly based on the owner's answers.
 
-IMPORTANT:
-- Only describe the business using information that appears in their answers / JSON.
+VERY IMPORTANT:
+- Only describe the business using information that appears below.
 - If something is missing, say "Not specified" instead of guessing.
 - If a business type is given (like plumbing, HVAC, cleaning, roofing, etc.),
   use that exact wording instead of the generic term "home service".
@@ -331,29 +341,44 @@ IMPORTANT:
 - Use bullets more than long paragraphs.
 - Do NOT mention AI, prompts, JSON, or that this was generated.
 
-OWNER INFO (parsed fields):
-- Owner name: {name}
-- Business name: {business_name or "Not specified"}
-- Business type: {business_type or "Not specified"}
-- Services you offer: {services_offered or "Not specified"}
-- Ideal customer: {ideal_customer or "Not specified"}
-- Biggest operational bottlenecks: {bottlenecks or "Not specified"}
-- Manual tasks you want automated: {manual_tasks or "Not specified"}
-- Current software: {current_software or "Not specified"}
-- Average lead response time: {lead_response_time or "Not specified"}
-- Leads per week: {leads_per_week or "Not specified"}
-- Jobs per week: {jobs_per_week or "Not specified"}
-- Growth goals (6–12 months): {growth_goals or "Not specified"}
-- What frustrates you most: {frustrations or "Not specified"}
-- Extra notes: {extra_notes or "Not specified"}
+OWNER INFO (parsed from the form):
 
-RAW FORM DATA (JSON FROM GOHIGHLEVEL):
-The following is the full JSON payload from the form submission.
-Use this as the source of truth for the owner's answers. Look carefully
-for any nested fields or custom fields and reflect them accurately in
-the blueprint. Do not invent details that are not present.
+Owner name: {name}
+Business name: {business_name or "Not specified"}
+Business type: {business_type or "Not specified"}
 
-{raw_json}
+Services you offer:
+{services_offered or "Not specified"}
+
+Ideal customer:
+{ideal_customer or "Not specified"}
+
+Biggest operational bottlenecks:
+{bottlenecks or "Not specified"}
+
+Manual tasks you want automated:
+{manual_tasks or "Not specified"}
+
+Current software:
+{current_software or "Not specified"}
+
+Average lead response time:
+{lead_response_time or "Not specified"}
+
+Leads per week:
+{leads_per_week or "Not specified"}
+
+Jobs per week:
+{jobs_per_week or "Not specified"}
+
+Growth goals (6–12 months):
+{growth_goals or "Not specified"}
+
+What frustrates you most:
+{frustrations or "Not specified"}
+
+Extra notes:
+{extra_notes or "Not specified"}
 
 NOW WRITE THE BLUEPRINT USING THIS EXACT STRUCTURE:
 
@@ -361,7 +386,7 @@ TITLE: AI Automation Blueprint
 
 Prepared for: {name}
 Business: {business_name or "Not specified"}
-Business type: {business_type or "Not specified"}
+Business type: {business_type or services_offered or "Not specified"}
 
 SECTION 1: Quick Snapshot
 Write 4–6 short bullets describing:
@@ -369,7 +394,7 @@ Write 4–6 short bullets describing:
 - Their main pain points and bottlenecks, using their language where possible
 - Where time or money is being lost today
 - The biggest opportunities for automation based on their answers
-- Anything else that stands out as important from their JSON data
+- Anything else that stands out as important from their answers
 
 SECTION 2: What You Told Me
 Rewrite their answers into the following labeled subsections:
@@ -509,7 +534,7 @@ def serve_pdf(pdf_id):
 
 @app.route("/", methods=["GET"])
 def healthcheck():
-    return "Apex Blueprint API (Render + S3, JSON-aware single-prompt) is running", 200
+    return "Apex Blueprint API (Render + S3, robust GHL fields) is running", 200
 
 
 if __name__ == "__main__":
