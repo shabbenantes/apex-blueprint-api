@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 import os
 import uuid
-import json  # to log raw JSON for debugging
+import json
 
 from openai import OpenAI
 import boto3
@@ -19,7 +19,7 @@ app = Flask(__name__)
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # ---------- S3 CONFIG ----------
-# Make sure these are set in Render:
+# In Render:
 #   S3_BUCKET_NAME  = apex-blueprints-prod
 #   S3_REGION       = us-east-2
 S3_BUCKET = os.environ.get("S3_BUCKET_NAME")
@@ -181,18 +181,12 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
             story.append(Spacer(1, 4))
             continue
 
-        # Heading detection:
-        # - Top-level sections: "AI Automation Blueprint", "SECTION 1:", etc.
-        # - Fix headings: "FIX 1 – ...", "FIX 2 – ...", etc.
-        # - Older "WIN" headings still treated as headings just in case.
-        # - Any short line ending in ":" (e.g., "What This Fixes:")
-        upper = line.upper()
+        # Headings: sections + any short line ending in ":"
         if (
-            upper.startswith("AI AUTOMATION BLUEPRINT")
-            or upper.startswith("SECTION ")
-            or upper.startswith("FIX ")
-            or upper.startswith("WIN ")
-            or upper.startswith("WEEK ")
+            line.upper().startswith("AI AUTOMATION BLUEPRINT")
+            or line.upper().startswith("SECTION ")
+            or line.upper().startswith("FIX ")
+            or line.upper().startswith("WEEK ")
             or (len(line) <= 60 and line.endswith(":"))
         ):
             story.append(Paragraph(line, heading_style))
@@ -247,8 +241,7 @@ def run_blueprint():
         or {}
     )
 
-    # Convenience values (using clean_value + multiple key options)
-
+    # ---------- Extract fields ----------
     name = clean_value(
         contact.get("full_name")
         or contact.get("name")
@@ -259,96 +252,57 @@ def run_blueprint():
     email = clean_value(contact.get("email"))
 
     business_name = clean_value(
-        form_fields.get("business_name")
-        or form_fields.get("Business Name")
+        form_fields.get("business_name") or form_fields.get("Business Name")
     )
-
     business_type = clean_value(
-        form_fields.get("business_type")
-        or form_fields.get("Business Type")
+        form_fields.get("business_type") or form_fields.get("Business Type")
     )
-
     services_offered = clean_value(
-        form_fields.get("services_offered")
-        or form_fields.get("Services You Offer")
+        form_fields.get("services_offered") or form_fields.get("Services You Offer")
     )
-
     ideal_customer = clean_value(
-        form_fields.get("ideal_customer")
-        or form_fields.get("Ideal Customer")
+        form_fields.get("ideal_customer") or form_fields.get("Ideal Customer")
     )
-
     bottlenecks = clean_value(
         form_fields.get("bottlenecks")
         or form_fields.get("Biggest Operational Bottlenecks")
     )
-
     manual_tasks = clean_value(
         form_fields.get("manual_tasks")
         or form_fields.get("Manual Tasks You Want Automated")
     )
-
     current_software = clean_value(
         form_fields.get("current_software")
         or form_fields.get("Software You Currently Use")
     )
-
     lead_response_time = clean_value(
         form_fields.get("lead_response_time")
         or form_fields.get("Average Lead Response Time")
     )
-
     leads_per_week = clean_value(
-        form_fields.get("leads_per_week")
-        or form_fields.get("Leads Per Week")
+        form_fields.get("leads_per_week") or form_fields.get("Leads Per Week")
     )
-
     jobs_per_week = clean_value(
-        form_fields.get("jobs_per_week")
-        or form_fields.get("Jobs Per Week")
+        form_fields.get("jobs_per_week") or form_fields.get("Jobs Per Week")
     )
-
     growth_goals = clean_value(
-        form_fields.get("growth_goals_6_12_months")
+        form_fields.get("growth_goals")
+        or form_fields.get("growth_goals_6_12_months")
         or form_fields.get("Growth Goals (6–12 months)")
     )
-
     frustrations = clean_value(
-        form_fields.get("what_frustrates_you_most")
+        form_fields.get("frustrations")
         or form_fields.get("What Frustrates You Most")
     )
-
     extra_notes = clean_value(
-        form_fields.get("anything_else_we_should_know")
+        form_fields.get("extra_notes")
         or form_fields.get("Anything Else We Should Know")
     )
-
-    # NEW: Team size
-    team_size_raw = clean_value(
+    team_size = clean_value(
         form_fields.get("team_size")
-        or form_fields.get("Team Size (Number of Employees)")
-        or form_fields.get("Team Size")
         or form_fields.get("Number of Employees")
+        or form_fields.get("number_of_employees")
     )
-
-    team_size_display = team_size_raw or "Not specified"
-
-    # Derive a "stage" label if we can parse a number
-    team_stage = "Not specified"
-    try:
-        if team_size_raw and team_size_raw.isdigit():
-            n = int(team_size_raw)
-            if n == 1:
-                team_stage = "Solo operator (1 person)"
-            elif 2 <= n <= 5:
-                team_stage = "Small team (2–5 people)"
-            elif 6 <= n <= 10:
-                team_stage = "Growing team (6–10 people)"
-            else:
-                team_stage = "Larger team (11+ people)"
-    except Exception:
-        # If parsing fails, just leave "Not specified"
-        pass
 
     # Fallback labels for the prompt
     bn = business_name or "Not specified"
@@ -364,8 +318,7 @@ def run_blueprint():
     gg = growth_goals or "Not specified"
     fr = frustrations or "Not specified"
     en = extra_notes or "Not specified"
-    ts = team_size_display
-    ts_stage = team_stage
+    ts = team_size or "Not specified"
 
     raw_json = json.dumps(data, indent=2, ensure_ascii=False)
 
@@ -391,8 +344,6 @@ OWNER INFO (parsed fields)
 - Owner name: {name}
 - Business name: {bn}
 - Business type: {bt}
-- Team size (number of employees): {ts}
-- Team stage: {ts_stage}
 - Services you offer: {so}
 - Ideal customer: {ic}
 - Biggest operational bottlenecks: {bo}
@@ -404,6 +355,7 @@ OWNER INFO (parsed fields)
 - Growth goals (6–12 months): {gg}
 - What frustrates you most: {fr}
 - Extra notes: {en}
+- Team size / number of employees: {ts}
 
 RAW FORM DATA (JSON FROM GOHIGHLEVEL)
 Use this as the source of truth for the owner's answers.
@@ -419,14 +371,12 @@ AI Automation Blueprint
 Prepared for: {name}
 Business: {bn}
 Business type: {bt}
-Team size: {ts} (Stage: {ts_stage})
 
 SECTION 1: Quick Snapshot
 Write 4–6 short bullets describing:
 - What type of business they run (use their exact business type or services if provided).
 - Their main pain points and bottlenecks, using their language where possible.
 - Where time or money is being lost today.
-- How their current team size and stage affect the way work gets done.
 - The biggest opportunities for automation based on their answers.
 - Any extra context from the JSON that clearly matters.
 
@@ -444,13 +394,13 @@ Where Time Is Being Lost:
 
 Opportunities You’re Not Using Yet:
 - 4–6 bullets describing automation opportunities that clearly
-  connect to their specific situation and team size.
+  connect to their specific situation.
 
-SECTION 3: Your Top 3 Fixes
+SECTION 3: Your Top 3 Automation Fixes
 
 FIX 1 – Short, outcome-focused title:
 What This Fixes:
-- 2–4 bullets tied directly to their stated bottlenecks, frustrations, and team stage.
+- 2–4 bullets tied directly to their stated bottlenecks and frustrations.
 
 What This Does For You:
 - 3–4 bullets describing benefits (time saved, more booked jobs, fewer headaches).
@@ -472,14 +422,13 @@ from their answers (do not assume they are fully manual if they mention tools).
 Then write 4–6 bullets describing:
 - Strengths they already have.
 - Weak spots that are slowing them down.
-- How their team size and stage affect their current score.
 - What the score means in everyday language.
 - What is most important to fix first.
 
 SECTION 5: Your 30-Day Action Plan
 
 Week 1 — Stabilize the Business
-- 3–4 bullets based on their current chaos, team size, and bottlenecks.
+- 3–4 bullets based on their current chaos and bottlenecks.
 
 Week 2 — Capture and Convert More Leads
 - 3–4 bullets focused on lead handling, follow-up, and booking.
@@ -489,13 +438,11 @@ Week 3 — Improve Customer Experience
 
 Week 4 — Optimize and Prepare to Scale
 - 3–4 bullets focused on visibility, reporting, and tightening up automations.
-- Where appropriate, mention how this prepares their team size for growth.
 
 SECTION 6: Final Recommendations
 Write 5–7 bullets giving clear, calm guidance:
 - What to build first for the fastest improvement.
 - What will move them toward their 6–12 month goals.
-- How their current team size and stage shape the order of priorities.
 - What they can safely ignore for now.
 - What they should come prepared with for a strategy call.
 - Where their biggest long-term opportunity is.
@@ -552,6 +499,7 @@ Write 5–7 bullets giving clear, calm guidance:
                 "name": name,
                 "email": email,
                 "business_name": business_name,
+                "team_size": team_size,
             }
         )
 
@@ -570,7 +518,7 @@ def serve_pdf(pdf_id):
 
 @app.route("/", methods=["GET"])
 def healthcheck():
-    return "Apex Blueprint API (Render + S3, template-ready single-prompt with team size) is running", 200
+    return "Apex Blueprint API (Render + S3, template-ready single-prompt) is running", 200
 
 
 if __name__ == "__main__":
