@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 import os
 import uuid
-import json
+import json  # to log raw JSON for debugging
 
 from openai import OpenAI
 import boto3
@@ -19,10 +19,29 @@ app = Flask(__name__)
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # ---------- S3 CONFIG ----------
+# Make sure these are set in Render:
+#   S3_BUCKET_NAME  = apex-blueprints-prod
+#   S3_REGION       = us-east-2
 S3_BUCKET = os.environ.get("S3_BUCKET_NAME")
 S3_REGION = os.environ.get("S3_REGION", "us-east-2")
 
 s3_client = boto3.client("s3", region_name=S3_REGION)
+
+
+# --------------------------------------------------------------------
+# SMALL HELPER: CLEAN FIELD VALUES
+# --------------------------------------------------------------------
+def clean_value(v: object) -> str:
+    """
+    Turn raw values from GHL into clean strings.
+    Treat 'null', 'None', 'N/A', etc. as empty.
+    """
+    if v is None:
+        return ""
+    s = str(v).strip()
+    if s.lower() in {"null", "none", "n/a", "na"}:
+        return ""
+    return s
 
 
 # --------------------------------------------------------------------
@@ -40,7 +59,7 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         fontName="Helvetica-Bold",
         fontSize=22,
         alignment=TA_CENTER,
-        textColor=colors.HexColor("#0A1A2F"),
+        textColor=colors.HexColor("#0A1A2F"),  # deep navy
         spaceAfter=6,
     )
 
@@ -136,7 +155,9 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     # Simple horizontal rule
     story.append(
         Paragraph(
-            "<para alignment='center'><font size=8 color='#CCCCCC'>────────────────────────────</font></para>",
+            "<para alignment='center'><font size=8 color='#CCCCCC'>"
+            "────────────────────────────"
+            "</font></para>",
             small_label_style,
         )
     )
@@ -160,13 +181,15 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
             story.append(Spacer(1, 4))
             continue
 
-        # Simple heading detection
+        # Heading detection:
+        # - Top-level sections: "AI Automation Blueprint", "SECTION 1:", etc.
+        # - Subheadings: any short line ending in ":" (e.g., "What This Fixes:")
         if (
-            line.upper().startswith("TITLE:")
+            line.upper().startswith("AI AUTOMATION BLUEPRINT")
             or line.upper().startswith("SECTION ")
             or line.upper().startswith("WIN ")
             or line.upper().startswith("WEEK ")
-            or line.upper().startswith("SUBSECTION:")
+            or (len(line) <= 60 and line.endswith(":"))
         ):
             story.append(Paragraph(line, heading_style))
         else:
@@ -195,7 +218,7 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
 
 
 # --------------------------------------------------------------------
-# /run – SINGLE-PROMPT BLUEPRINT GENERATION (JSON-AWARE)
+# /run – SINGLE-PROMPT BLUEPRINT GENERATION
 # --------------------------------------------------------------------
 @app.route("/run", methods=["POST"])
 def run_blueprint():
@@ -206,112 +229,189 @@ def run_blueprint():
     """
     data = request.get_json(force=True) or {}
 
-    # ---- Log the raw payload to Render logs (helps if GHL changes shape) ----
-    print("Incoming payload:", json.dumps(data, indent=2), flush=True)
+    # Log the raw payload to Render logs (helps if GHL changes shape)
+    print("Incoming payload:", json.dumps(data, indent=2, ensure_ascii=False), flush=True)
 
-    # Contact info (works with different GHL shapes)
+    # Contact info
     contact = data.get("contact", {}) or data.get("contact_data", {}) or {}
 
-    name = (
+    # Form fields (from your webhook body)
+    form_fields = (
+        data.get("form_fields")
+        or data.get("form")
+        or data.get("form_submission", {}).get("form_fields")
+        or {}
+    )
+
+    # Convenience values (using clean_value + multiple key options)
+
+    name = clean_value(
         contact.get("full_name")
-        or contact.get("fullName")
-        or (
-            (contact.get("first_name") or contact.get("firstName") or "")
-            + " "
-            + (contact.get("last_name") or contact.get("lastName") or "")
-        ).strip()
         or contact.get("name")
-        or "there"
+        or contact.get("first_name")
+        or contact.get("firstName")
+    ) or "there"
+
+    email = clean_value(contact.get("email"))
+
+    business_name = clean_value(
+        form_fields.get("business_name")
+        or form_fields.get("Business Name")
     )
 
-    email = contact.get("email", "")
-
-    # Business name is often in contact, but if not, model will pull it from JSON
-    business_name = (
-        contact.get("business_name")
-        or contact.get("company")
-        or contact.get("businessName")
-        or ""
+    business_type = clean_value(
+        form_fields.get("business_type")
+        or form_fields.get("Business Type")
     )
 
-    # Full raw JSON for the model to reference (safety net – ALL form answers live here)
+    services_offered = clean_value(
+        form_fields.get("services_offered")
+        or form_fields.get("Services You Offer")
+    )
+
+    ideal_customer = clean_value(
+        form_fields.get("ideal_customer")
+        or form_fields.get("Ideal Customer")
+    )
+
+    bottlenecks = clean_value(
+        form_fields.get("bottlenecks")
+        or form_fields.get("Biggest Operational Bottlenecks")
+    )
+
+    manual_tasks = clean_value(
+        form_fields.get("manual_tasks")
+        or form_fields.get("Manual Tasks You Want Automated")
+    )
+
+    current_software = clean_value(
+        form_fields.get("current_software")
+        or form_fields.get("Software You Currently Use")
+    )
+
+    lead_response_time = clean_value(
+        form_fields.get("lead_response_time")
+        or form_fields.get("Average Lead Response Time")
+    )
+
+    leads_per_week = clean_value(
+        form_fields.get("leads_per_week")
+        or form_fields.get("Leads Per Week")
+    )
+
+    jobs_per_week = clean_value(
+        form_fields.get("jobs_per_week")
+        or form_fields.get("Jobs Per Week")
+    )
+
+    growth_goals = clean_value(
+        form_fields.get("growth_goals_6_12_months")
+        or form_fields.get("Growth Goals (6–12 months)")
+    )
+
+    frustrations = clean_value(
+        form_fields.get("what_frustrates_you_most")
+        or form_fields.get("What Frustrates You Most")
+    )
+
+    extra_notes = clean_value(
+        form_fields.get("anything_else_we_should_know")
+        or form_fields.get("Anything Else We Should Know")
+    )
+
+    # Fallback labels for the prompt
+    bn = business_name or "Not specified"
+    bt = business_type or "Not specified"
+    so = services_offered or "Not specified"
+    ic = ideal_customer or "Not specified"
+    bo = bottlenecks or "Not specified"
+    mt = manual_tasks or "Not specified"
+    cs = current_software or "Not specified"
+    lrt = lead_response_time or "Not specified"
+    lpw = leads_per_week or "Not specified"
+    jpw = jobs_per_week or "Not specified"
+    gg = growth_goals or "Not specified"
+    fr = frustrations or "Not specified"
+    en = extra_notes or "Not specified"
+
     raw_json = json.dumps(data, indent=2, ensure_ascii=False)
 
     # --------- SINGLE PROMPT ----------
     prompt = f"""
 You are APEX AI, a senior automation consultant who writes premium,
-clear, confidence-building business blueprints for service-business owners.
+clear, confidence-building business blueprints for home-service owners.
 
-You are given the FULL JSON payload from a GoHighLevel webhook.
-Inside that JSON are the owner's form answers and contact details.
+Your job is to create a clean, structured, easy-to-read written blueprint
+that feels clearly based on the owner's answers.
 
-YOUR JOB (VERY IMPORTANT):
-1. Carefully read the JSON.
-2. Find ALL relevant answers about:
-   - Business type / niche
-   - Services they offer
-   - Ideal customer
-   - Bottlenecks and frustrations
-   - Manual tasks they want automated
-   - Tools / software they use now
-   - Lead response time
-   - Leads per week / jobs per week
-   - Goals for the next 6–12 months
-   - Anything else they told you in open text fields
-3. Use ONLY what is actually present in the JSON.
-   - If something is missing, say "Not specified".
-   - Do NOT guess or invent details.
-   - If you see values inside "customFields", "form_submission",
-     "formData", or similar nested objects, use them.
+STYLE RULES
+- Use simple business language (no tech jargon).
+- Sound calm, professional, and confident.
+- Speak directly to the owner as "you" and "your business".
+- Prefer short paragraphs and bullet points.
+- Do NOT mention AI, prompts, JSON, or that this was generated.
+- Do NOT scold the owner for missing information.
+- If a detail is not specified, you may either skip it or briefly say "Not specified".
+- Do NOT include any closing line like "END OF BLUEPRINT".
 
-Speak directly to the owner as "you" and "your business".
-Do NOT mention AI, JSON, webhooks, or that this was generated.
-
-OWNER (KNOWN FIELDS):
+OWNER INFO (parsed fields)
 - Owner name: {name}
-- Business name (if present): {business_name or "Not specified"}
+- Business name: {bn}
+- Business type: {bt}
+- Services you offer: {so}
+- Ideal customer: {ic}
+- Biggest operational bottlenecks: {bo}
+- Manual tasks you want automated: {mt}
+- Current software: {cs}
+- Average lead response time: {lrt}
+- Leads per week: {lpw}
+- Jobs per week: {jpw}
+- Growth goals (6–12 months): {gg}
+- What frustrates you most: {fr}
+- Extra notes: {en}
 
-FULL WEBHOOK JSON (SOURCE OF TRUTH – READ THIS CAREFULLY):
+RAW FORM DATA (JSON FROM GOHIGHLEVEL)
+Use this as the source of truth for the owner's answers.
+If you see more specific details in the JSON, you may use them,
+but never invent anything that is not clearly implied there.
+
 {raw_json}
 
-Now, based ONLY on what you find in that JSON, write the blueprint
-using this exact structure and headings:
+NOW WRITE THE BLUEPRINT USING THIS EXACT STRUCTURE AND HEADINGS:
 
-TITLE: AI Automation Blueprint
+AI Automation Blueprint
 
 Prepared for: {name}
-Business: [use the business name from JSON if clearly specified, otherwise write "Not specified"]
-Business type: [use the clearest description from JSON, e.g. plumbing / HVAC / roofing / cleaning, etc.]
+Business: {bn}
+Business type: {bt}
 
 SECTION 1: Quick Snapshot
 Write 4–6 short bullets describing:
-- What type of business they run (use their actual business type / niche if you can find it)
-- Their main pain points and bottlenecks, using their language where possible
-- Where time or money is being lost today
-- The biggest opportunities for automation based on their answers
-- Anything else that stands out as important from their data
+- What type of business they run (use their exact business type or services if provided).
+- Their main pain points and bottlenecks, using their language where possible.
+- Where time or money is being lost today.
+- The biggest opportunities for automation based on their answers.
+- Any extra context from the JSON that clearly matters.
 
 SECTION 2: What You Told Me
-Rewrite their answers into the following labeled subsections:
 
-Subsection: Your Goals
+Your Goals:
 - 3–5 bullets summarizing their 6–12 month goals and priorities.
 
-Subsection: Your Challenges
+Your Challenges:
 - 3–6 bullets summarizing the problems they described
   (capacity, leads, staffing, follow-up, software issues, etc.).
 
-Subsection: Where Time Is Being Lost
+Where Time Is Being Lost:
 - 3–5 bullets describing the manual tasks, delays, or bottlenecks.
 
-Subsection: Opportunities You’re Not Using Yet
+Opportunities You’re Not Using Yet:
 - 4–6 bullets describing automation opportunities that clearly
   connect to their specific situation.
 
 SECTION 3: Your Top 3 Automation Wins
-For each win, write:
 
-WIN 1: [short, outcome-focused title]
+WIN 1 – Short, outcome-focused title:
 What This Fixes:
 - 2–4 bullets tied directly to their stated bottlenecks and frustrations.
 
@@ -322,20 +422,23 @@ What’s Included:
 - 3–5 bullets describing simple, easy-to-understand automation actions
   (for example: automatic follow-up, instant replies, reminders, scheduling flows).
 
-Repeat the same structure for WIN 2 and WIN 3.
+WIN 2 – Short, outcome-focused title:
+[Use the same structure as WIN 1, tailored to another important area.]
+
+WIN 3 – Short, outcome-focused title:
+[Use the same structure as WIN 1, tailored to another important area.]
 
 SECTION 4: Your Automation Scorecard (0–100)
 Give a clear, fair score from 0–100 based on how automated they seem
 from their answers (do not assume they are fully manual if they mention tools).
 
 Then write 4–6 bullets describing:
-- Strengths they already have
-- Weak spots that are slowing them down
-- What the score means in everyday language
-- What is most important to fix first
+- Strengths they already have.
+- Weak spots that are slowing them down.
+- What the score means in everyday language.
+- What is most important to fix first.
 
 SECTION 5: Your 30-Day Action Plan
-Break into weekly sections:
 
 Week 1 — Stabilize the Business
 - 3–4 bullets based on their current chaos and bottlenecks.
@@ -351,13 +454,11 @@ Week 4 — Optimize and Prepare to Scale
 
 SECTION 6: Final Recommendations
 Write 5–7 bullets giving clear, calm guidance:
-- What to build first for the fastest improvement
-- What will move them toward their 6–12 month goals
-- What they can safely ignore for now
-- What they should come prepared with for a strategy call
-- Where their biggest long-term opportunity is
-
-END OF BLUEPRINT
+- What to build first for the fastest improvement.
+- What will move them toward their 6–12 month goals.
+- What they can safely ignore for now.
+- What they should come prepared with for a strategy call.
+- Where their biggest long-term opportunity is.
 """
 
     try:
@@ -395,7 +496,7 @@ END OF BLUEPRINT
             Key=s3_key,
             ExtraArgs={
                 "ContentType": "application/pdf",
-                "ACL": "public-read",
+                "ACL": "public-read",  # allow download by link
             },
         )
 
@@ -419,6 +520,9 @@ END OF BLUEPRINT
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+# --------------------------------------------------------------------
+# Legacy /pdf route (not used now)
+# --------------------------------------------------------------------
 @app.route("/pdf/<pdf_id>", methods=["GET"])
 def serve_pdf(pdf_id):
     return "PDFs are now stored on S3.", 410
@@ -426,7 +530,7 @@ def serve_pdf(pdf_id):
 
 @app.route("/", methods=["GET"])
 def healthcheck():
-    return "Apex Blueprint API (Render + S3, JSON-aware single-prompt) is running", 200
+    return "Apex Blueprint API (Render + S3, template-ready single-prompt) is running", 200
 
 
 if __name__ == "__main__":
