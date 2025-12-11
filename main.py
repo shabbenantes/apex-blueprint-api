@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify
 import os
 import uuid
-import re  # for cleaning up markdown-like symbols
 
 from openai import OpenAI
 import boto3
@@ -24,12 +23,6 @@ S3_REGION = os.environ.get("S3_REGION", "us-east-2")
 
 s3_client = boto3.client("s3", region_name=S3_REGION)
 
-# ---------- BOOKING LINK (used in PDF CTA) ----------
-BOOKING_URL = os.environ.get(
-    "BOOKING_URL",
-    "https://api.leadconnectorhq.com/widget/bookings/automation-strategy-call-1",
-)
-
 
 # --------------------------------------------------------------------
 # PDF GENERATION
@@ -37,7 +30,6 @@ BOOKING_URL = os.environ.get(
 def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: str):
     """
     Turn the blueprint text into a clean, branded PDF with clearer sections.
-    Removes raw ### and ** markers and formats headings/bullets nicely.
     """
     styles = getSampleStyleSheet()
 
@@ -71,7 +63,6 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         spaceAfter=4,
     )
 
-    # MAIN SECTION HEADINGS – keepWithNext so they don't get stranded
     heading_style = ParagraphStyle(
         "HeadingStyle",
         parent=styles["Heading2"],
@@ -80,19 +71,6 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         textColor=colors.HexColor("#0A1A2F"),
         spaceBefore=14,
         spaceAfter=6,
-        keepWithNext=True,
-    )
-
-    # SUBHEADINGS – also keepWithNext
-    subheading_style = ParagraphStyle(
-        "SubHeadingStyle",
-        parent=styles["Heading3"],
-        fontName="Helvetica-Bold",
-        fontSize=12,
-        textColor=colors.HexColor("#0A1A2F"),
-        spaceBefore=10,
-        spaceAfter=4,
-        keepWithNext=True,
     )
 
     body_style = ParagraphStyle(
@@ -146,9 +124,13 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         Paragraph("AI Automation Blueprint for Your Service Business", tagline_style)
     )
 
-    owner_line = f"Prepared for: {name if name else 'Your Business Owner'}"
-    if business_name:
-        owner_line += f"  •  Business: {business_name}"
+    # NEW: include business name + owner when possible
+    if business_name and name:
+        owner_line = f"Prepared for: {business_name} – {name}"
+    elif business_name:
+        owner_line = f"Prepared for: {business_name}"
+    else:
+        owner_line = f"Prepared for: {name or 'Your Business Owner'}"
 
     story.append(Paragraph(owner_line, small_label_style))
     story.append(Paragraph("30-Day Automation Roadmap", small_label_style))
@@ -175,11 +157,6 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     )
     story.append(Spacer(1, 12))
 
-    # Helper: convert **bold** to <b>bold</b>
-    def convert_inline_formatting(text: str) -> str:
-        text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
-        return text
-
     # ------- BODY FROM BLUEPRINT TEXT -------
     lines = blueprint_text.splitlines()
     for raw_line in lines:
@@ -188,43 +165,18 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
             story.append(Spacer(1, 4))
             continue
 
-        style = body_style
-        cleaned = line
+        if (
+            line.upper().startswith("TITLE:")
+            or line.upper().startswith("SECTION ")
+            or line.upper().startswith("WIN ")
+            or line.upper().startswith("WEEK ")
+            or line.upper().startswith("SUBSECTION:")
+        ):
+            story.append(Paragraph(line, heading_style))
+        else:
+            story.append(Paragraph(line, body_style))
 
-        # Strip leading markdown-like # if the model ever sneaks them in
-        if cleaned.startswith("#"):
-            cleaned = cleaned.lstrip("#").strip()
-
-        upper = cleaned.upper()
-
-        # MAIN SECTION HEADINGS
-        if upper.startswith("TITLE:"):
-            style = heading_style
-        elif upper.startswith("SECTION "):
-            style = heading_style
-        # SUBSECTIONS (we strip the "Subsection:" label in display)
-        elif upper.startswith("SUBSECTION:"):
-            style = subheading_style
-            cleaned = cleaned.split(":", 1)[1].strip() or cleaned
-        # WEEKS
-        elif upper.startswith("WEEK "):
-            style = subheading_style
-        # WINS, e.g. "Win 1 — Automated Booking"
-        elif cleaned.startswith("Win "):
-            style = subheading_style
-
-        # BULLETS: "- something" or "* something" → "• something"
-        if cleaned.startswith("- "):
-            cleaned = "• " + cleaned[2:].strip()
-        elif cleaned.startswith("* "):
-            cleaned = "• " + cleaned[2:].strip()
-
-        # Inline bold if any **text** sneaks in
-        cleaned = convert_inline_formatting(cleaned)
-
-        story.append(Paragraph(cleaned, style))
-
-    # ------- CTA BLOCK AT END (with real booking link) -------
+    # ------- CTA BLOCK AT END -------
     story.append(Spacer(1, 20))
     story.append(
         Paragraph("Next Step: Book Your Automation Strategy Call", cta_heading_style)
@@ -243,27 +195,14 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         )
     )
 
-    # Clickable booking link in the PDF
-    story.append(
-        Paragraph(
-            f'Click here to book: <u><link href="{BOOKING_URL}">{BOOKING_URL}</link></u>',
-            cta_body_style,
-        )
-    )
-
     doc.build(story)
 
 
 # --------------------------------------------------------------------
-# /run – SINGLE-PROMPT BLUEPRINT GENERATION
+# /run – SINGLE-PROMPT BLUEPRINT GENERATION (MORE TAILORED)
 # --------------------------------------------------------------------
 @app.route("/run", methods=["POST"])
 def run_blueprint():
-    """
-    Called by your automation system when the form is submitted.
-    Takes the contact + form answers, generates a blueprint in ONE AI call,
-    generates a PDF, uploads it to S3, and returns everything as JSON.
-    """
     data = request.get_json(force=True) or {}
 
     # Contact + form info
@@ -284,10 +223,20 @@ def run_blueprint():
         or ""
     )
 
-    # Raw form text for the model
-    raw_form_text_lines = [f"{k}: {v}" for k, v in form_fields.items()]
-    raw_form_text = "\n".join(raw_form_text_lines) if raw_form_text_lines else "N/A"
+    # Pull each custom field explicitly (using your labels)
+    services_offered = form_fields.get("services_offered", "")  # Services Offered
+    lead_response_speed = form_fields.get("lead_response_speed", "")  # Lead Response Speed
+    leads_per_week = form_fields.get("leads_per_week", "")  # Leads Per Week
+    jobs_per_week = form_fields.get("jobs_per_week", "")  # Jobs Per Week
+    contact_methods = form_fields.get("customer_contact_methods", "")  # Customer Contact Methods
+    biggest_frustration = form_fields.get("biggest_frustration", "")  # Biggest Frustration
+    time_loss_areas = form_fields.get("time_loss_areas", "")  # Time Loss Areas
+    main_goals = form_fields.get("main_goals", "")  # Main Goals
+    desired_automations = form_fields.get("desired_automations", "")  # Desired Automations
+    current_software = form_fields.get("current_software", "")  # Current Software
+    ideal_experience = form_fields.get("ideal_customer_experience", "")  # Ideal Customer Experience
 
+    # --------- SINGLE PROMPT (more literal + no guessing) ----------
     prompt = f"""
 You are APEX AI, a senior automation consultant who writes premium,
 clear, confidence-building business blueprints for home-service owners.
@@ -296,106 +245,161 @@ Your goal: create a clean, structured, easy-to-read written blueprint
 that will later be inserted into a Google Docs template and exported as
 a polished PDF.
 
-IMPORTANT WRITING RULES:
-- Use simple business language (no tech jargon).
-- Keep every section short, clear, and easy to scan.
-- Use bullets more than long paragraphs.
-- Sound calm, professional, and confident.
-- Speak directly to the reader using “you” and “your business”.
-- Never mention AI, prompts, or that this text was generated.
-- Do NOT use markdown symbols (#, ##, ###).
-- Do NOT use asterisks (*) for bold or emphasis.
+ABSOLUTE RULES (VERY IMPORTANT):
+- Use ONLY the information given below about this business.
+- DO NOT invent details that are not clearly supported by the answers.
+- DO NOT say “likely”, “seems”, “appears”, or anything that sounds uncertain.
+- State things as facts based on what they wrote.
+- If something is not mentioned, simply don’t talk about it.
+- Reuse their own words where helpful, but clean up grammar and make it clearer.
+- Keep every section short, concrete, and easy to scan.
+- Use simple business language (no tech jargon like “CRM”, “APIs”, “backend”).
+- Do NOT use markdown symbols (#, ##, *, bullets with hyphens, etc.).
 - Do NOT include emojis.
-- Do NOT refer to “form”, “survey”, or “questions”.
-- No long paragraphs; keep everything concise.
-- The blueprint should feel personalized, but not overly specific.
-- Maintain the same structure every time.
+- Speak directly to the owner using “you” and “your business”.
+- Maintain the same structure every time so the PDF layout stays consistent.
 
 ------------------------------------------------------------
-INPUT DATA
-Owner Name: {name}
-Business Name: {business_name if business_name else "Not specified"}
-Owner's Raw Answers:
-{raw_form_text}
+INPUT DATA FROM INTAKE FORM
+
+Owner name: {name}
+Business name: {business_name}
+
+Services offered:
+{services_offered}
+
+Lead response speed (how fast they respond now):
+{lead_response_speed}
+
+Leads per week:
+{leads_per_week}
+
+Jobs per week:
+{jobs_per_week}
+
+Customer contact methods:
+{contact_methods}
+
+Biggest frustration:
+{biggest_frustration}
+
+Where time is being lost:
+{time_loss_areas}
+
+Main goals for the next 6–12 months:
+{main_goals}
+
+What they’d love to stop doing manually (desired automations):
+{desired_automations}
+
+Current software/tools:
+{current_software}
+
+Ideal customer experience:
+{ideal_experience}
 ------------------------------------------------------------
 
-NOW WRITE THE BLUEPRINT USING THIS EXACT STRUCTURE:
+NOW WRITE THE BLUEPRINT USING THIS EXACT STRUCTURE
+(plain text headings, no markdown):
 
 TITLE: AI Automation Blueprint
 
 SECTION 1: Quick Snapshot
-Write 4–6 short bullets describing:
-- What type of business they appear to run
-- Their biggest pain points in plain English
-- Where they are losing time or money
-- The biggest opportunities for automation
-- What feels chaotic or overwhelming today
+Write 4–6 short bullets that:
+- Describe what type of business they run using their services and volume (leads/jobs per week).
+- Call out their biggest frustration and main goals in your own clear words.
+- Describe where they are losing time, using their “time loss areas” and contact methods.
+- Highlight the main opportunities for automation based on their desired automations and current situation.
+
+Every bullet in this section MUST be clearly connected to one or more of:
+services offered, leads per week, jobs per week, biggest frustration,
+time loss areas, desired automations, ideal customer experience.
 
 SECTION 2: What You Told Me
 Rewrite their answers into the following labeled subsections:
 
 Subsection: Your Goals
-Write 3–5 bullets summarizing their goals.
+Use ONLY their “main goals” and anything related from other answers.
+Summarize into 3–5 bullets in clear, simple language.
 
 Subsection: Your Challenges
-Write 3–6 bullets summarizing the problems they’re dealing with.
+Use mainly “biggest frustration”, “time loss areas”, and anything that
+sounds like a problem in their answers.
+Write 3–6 bullets that feel very specific to them.
 
 Subsection: Where Time Is Being Lost
-Write 3–5 bullets describing inefficiencies or bottlenecks.
+Use ONLY their “time loss areas”, lead response speed, contact methods,
+and anything that adds detail.
+Write 3–5 bullets that describe where time, focus, or money is being wasted.
 
 Subsection: Opportunities You’re Not Leveraging Yet
-Write 3–6 bullets describing automation opportunities relevant to
-home-service businesses.
+Use their “desired automations”, “ideal customer experience”, and
+“current software”.
+Write 3–6 bullets that show clear, practical opportunities for automation
+in their exact situation.
 
 SECTION 3: Your Top 3 Automation Wins
-Write three wins in this format:
+Create three “wins” that are obviously based on their answers.
 
-Win 1 — Short, outcome-focused title
+For each win, write:
+
+WIN 1 – Short outcome-focused title
 What This Fixes:
-- 2–4 bullets
+- 2–4 bullets describing the specific problems this win addresses,
+  based on their challenges and time loss areas.
 
 What This Does For You:
-- 3–4 bullets describing benefits like time saved, more booked jobs, less stress.
+- 3–4 bullets describing the benefits in plain language
+  (time saved, fewer headaches, more booked jobs, better experience).
 
 What’s Included:
-- 3–5 bullets describing simple, easy-to-understand automation actions
-  (for example: automatic follow-up, instant replies, reminders, scheduling flows).
+- 3–5 bullets describing what the automation actually DOES day to day,
+  using their desired automations and contact methods (e.g. faster replies,
+  automatic reminders, better tracking).
 
-Then repeat the same structure for:
-Win 2 — ...
-Win 3 — ...
+Repeat this structure for WIN 2 and WIN 3.
+Each win should feel different and cover a different cluster of problems.
 
 SECTION 4: Your Automation Scorecard (0–100)
-Give a clear, fair score from 0–100.
+Give a score between 0 and 100 that fits their current level.
+Base it on:
+- How manual their communication and scheduling are.
+- Whether they’re using any software already.
+- Their goals vs. where they are now.
 
-Then write 4–6 bullets describing:
-- Strengths they already have
-- Weaknesses that hurt performance
-- What the score means in everyday language
-- What is most important to fix first
+Then write 4–6 bullets explaining:
+- What they’re already doing well.
+- Where they are weak or at risk.
+- What this score means in simple language.
+- What is most important to fix first.
 
 SECTION 5: Your 30-Day Action Plan
 Break into weekly sections:
 
-Week 1 — Stabilize
-Write 3–4 simple bullets.
+Week 1 — Stabilize The Day-To-Day
+Write 3–4 bullets focused on fixing the worst leaks first
+(response speed, missed calls/messages, basic tracking).
 
 Week 2 — Increase Booked Jobs
-Write 3–4 bullets.
+Write 3–4 bullets focused on follow-up, reminders, and
+making it easier for people to book jobs.
 
 Week 3 — Improve Customer Experience
-Write 3–4 bullets.
+Write 3–4 bullets focused on communication, updates,
+and matching their “ideal customer experience”.
 
 Week 4 — Optimize and Prepare to Scale
-Write 3–4 bullets.
+Write 3–4 bullets focused on small improvements, better visibility,
+and getting ready to handle more volume without more chaos.
 
 SECTION 6: Final Recommendations
-Write 5–7 bullets giving clear, calm guidance:
-- What to build first
-- What will create the fastest improvements
-- What not to worry about yet
-- What they should come prepared with for a strategy call
-- Where their biggest long-term opportunity is
+Write 5–7 short bullets that:
+- Tell them what to focus on first.
+- Highlight the simple wins that will have the biggest impact.
+- Reassure them they don’t need to fix everything at once.
+- Suggest what they should have ready before a strategy call
+  (examples: logins, examples of messages, simple numbers).
+- Point out their biggest long-term opportunity based on their goals.
 
 END OF BLUEPRINT
 """
@@ -469,7 +473,7 @@ def serve_pdf(pdf_id):
 
 @app.route("/", methods=["GET"])
 def healthcheck():
-    return "Apex Blueprint API (Render + S3, single-prompt cleaned version) is running", 200
+    return "Apex Blueprint API (Render + S3, tailored single-prompt version) is running", 200
 
 
 if __name__ == "__main__":
