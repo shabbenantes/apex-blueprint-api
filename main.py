@@ -187,7 +187,7 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         if (
             line.upper().startswith("AI AUTOMATION BLUEPRINT")
             or line.upper().startswith("SECTION ")
-            or line.upper().startswith("WIN ")
+            or line.upper().startswith("FIX ")
             or line.upper().startswith("WEEK ")
             or (len(line) <= 60 and line.endswith(":"))
         ):
@@ -230,7 +230,11 @@ def run_blueprint():
     data = request.get_json(force=True) or {}
 
     # Log the raw payload to Render logs (helps if GHL changes shape)
-    print("Incoming payload:", json.dumps(data, indent=2, ensure_ascii=False), flush=True)
+    print(
+        "Incoming payload:",
+        json.dumps(data, indent=2, ensure_ascii=False),
+        flush=True,
+    )
 
     # Contact info
     contact = data.get("contact", {}) or data.get("contact_data", {}) or {}
@@ -255,23 +259,19 @@ def run_blueprint():
     email = clean_value(contact.get("email"))
 
     business_name = clean_value(
-        form_fields.get("business_name")
-        or form_fields.get("Business Name")
+        form_fields.get("business_name") or form_fields.get("Business Name")
     )
 
     business_type = clean_value(
-        form_fields.get("business_type")
-        or form_fields.get("Business Type")
+        form_fields.get("business_type") or form_fields.get("Business Type")
     )
 
     services_offered = clean_value(
-        form_fields.get("services_offered")
-        or form_fields.get("Services You Offer")
+        form_fields.get("services_offered") or form_fields.get("Services You Offer")
     )
 
     ideal_customer = clean_value(
-        form_fields.get("ideal_customer")
-        or form_fields.get("Ideal Customer")
+        form_fields.get("ideal_customer") or form_fields.get("Ideal Customer")
     )
 
     bottlenecks = clean_value(
@@ -295,13 +295,11 @@ def run_blueprint():
     )
 
     leads_per_week = clean_value(
-        form_fields.get("leads_per_week")
-        or form_fields.get("Leads Per Week")
+        form_fields.get("leads_per_week") or form_fields.get("Leads Per Week")
     )
 
     jobs_per_week = clean_value(
-        form_fields.get("jobs_per_week")
-        or form_fields.get("Jobs Per Week")
+        form_fields.get("jobs_per_week") or form_fields.get("Jobs Per Week")
     )
 
     growth_goals = clean_value(
@@ -348,7 +346,8 @@ STYLE RULES
 - Use simple business language (no tech jargon).
 - Sound calm, professional, and confident.
 - Speak directly to the owner as "you" and "your business".
-- Prefer short paragraphs and bullet points.
+- Prefer short paragraphs and bullet points over long blocks of text.
+- Avoid generic filler intros; get straight to the useful information.
 - Do NOT mention AI, prompts, JSON, or that this was generated.
 - Do NOT scold the owner for missing information.
 - If a detail is not specified, you may either skip it or briefly say "Not specified".
@@ -409,9 +408,9 @@ Opportunities You’re Not Using Yet:
 - 4–6 bullets describing automation opportunities that clearly
   connect to their specific situation.
 
-SECTION 3: Your Top 3 Automation Wins
+SECTION 3: Your Top 3 Fixes
 
-WIN 1 – Short, outcome-focused title:
+FIX 1 – Short, outcome-focused title:
 What This Fixes:
 - 2–4 bullets tied directly to their stated bottlenecks and frustrations.
 
@@ -422,11 +421,11 @@ What’s Included:
 - 3–5 bullets describing simple, easy-to-understand automation actions
   (for example: automatic follow-up, instant replies, reminders, scheduling flows).
 
-WIN 2 – Short, outcome-focused title:
-[Use the same structure as WIN 1, tailored to another important area.]
+FIX 2 – Short, outcome-focused title:
+[Use the same structure as FIX 1, tailored to another important area.]
 
-WIN 3 – Short, outcome-focused title:
-[Use the same structure as WIN 1, tailored to another important area.]
+FIX 3 – Short, outcome-focused title:
+[Use the same structure as FIX 1, tailored to another important area.]
 
 SECTION 4: Your Automation Scorecard (0–100)
 Give a clear, fair score from 0–100 based on how automated they seem
