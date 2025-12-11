@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 import os
 import uuid
-import re  # NEW: for cleaning up markdown-like symbols
+import re  # for cleaning up markdown-like symbols
 
 from openai import OpenAI
 import boto3
@@ -19,9 +19,6 @@ app = Flask(__name__)
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # ---------- S3 CONFIG ----------
-# Make sure these are set in Render:
-#   S3_BUCKET_NAME  = apex-blueprints-prod   (your bucket name)
-#   S3_REGION       = us-east-2              (Ohio for you)
 S3_BUCKET = os.environ.get("S3_BUCKET_NAME")
 S3_REGION = os.environ.get("S3_REGION", "us-east-2")
 
@@ -168,9 +165,8 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     )
     story.append(Spacer(1, 12))
 
-    # Helper: convert **bold** to <b>bold</b> and clean up
+    # Helper: convert **bold** to <b>bold</b>
     def convert_inline_formatting(text: str) -> str:
-        # Convert **bold** to <b>bold</b>
         text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
         return text
 
@@ -185,33 +181,35 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         style = body_style
         cleaned = line
 
-        # 1) Strip leading markdown-style ### / ## / #
+        # Strip leading markdown-like # if the model ever sneaks them in
         if cleaned.startswith("#"):
             cleaned = cleaned.lstrip("#").strip()
-            style = heading_style
 
-        # 2) Detect our main heading patterns
         upper = cleaned.upper()
+
+        # MAIN SECTION HEADINGS
         if upper.startswith("TITLE:"):
             style = heading_style
         elif upper.startswith("SECTION "):
             style = heading_style
+        # SUBSECTIONS (we strip the "Subsection:" label in display)
         elif upper.startswith("SUBSECTION:"):
-        #   "Subsection: Your Goals"
             style = subheading_style
-        elif upper.startswith("WIN TITLE"):
-            style = subheading_style
+            cleaned = cleaned.split(":", 1)[1].strip() or cleaned
+        # WEEKS
         elif upper.startswith("WEEK "):
             style = subheading_style
+        # WINS, e.g. "Win 1 — Automated Booking"
+        elif cleaned.startswith("Win "):
+            style = subheading_style
 
-        # 3) Bullet lines: "- something" or "* something"
+        # BULLETS: "- something" or "* something" → "• something"
         if cleaned.startswith("- "):
             cleaned = "• " + cleaned[2:].strip()
         elif cleaned.startswith("* "):
-            # If the model ever uses "* " bullets, normalize too
             cleaned = "• " + cleaned[2:].strip()
 
-        # 4) Replace inline **bold** with real bold tags
+        # Inline bold if any **text** sneaks in
         cleaned = convert_inline_formatting(cleaned)
 
         story.append(Paragraph(cleaned, style))
@@ -272,7 +270,7 @@ def run_blueprint():
     raw_form_text_lines = [f"{k}: {v}" for k, v in form_fields.items()]
     raw_form_text = "\n".join(raw_form_text_lines) if raw_form_text_lines else "N/A"
 
-    # --------- SINGLE PROMPT (Option A / Google Docs friendly) ----------
+    # --------- SINGLE PROMPT (Option A / cleaned headings) ----------
     prompt = f"""
 You are APEX AI, a senior automation consultant who writes premium,
 clear, confidence-building business blueprints for home-service owners.
@@ -333,9 +331,9 @@ Write 3–6 bullets describing automation opportunities relevant to
 home-service businesses.
 
 SECTION 3: Your Top 3 Automation Wins
-For each win, write:
+Write three wins in this format:
 
-WIN TITLE (short, outcome-focused)
+Win 1 — Short, outcome-focused title
 What This Fixes:
 - 2–4 bullets
 
@@ -345,6 +343,10 @@ What This Does For You:
 What’s Included:
 - 3–5 bullets describing simple, easy-to-understand automation actions
   (for example: automatic follow-up, instant replies, reminders, scheduling flows).
+
+Then repeat the same structure for:
+Win 2 — ...
+Win 3 — ...
 
 SECTION 4: Your Automation Scorecard (0–100)
 Give a clear, fair score from 0–100.
@@ -416,7 +418,7 @@ END OF BLUEPRINT
             Key=s3_key,
             ExtraArgs={
                 "ContentType": "application/pdf",
-                "ACL": "public-read",  # allow download by link (since your bucket has ACLs enabled)
+                "ACL": "public-read",
             },
         )
 
@@ -450,7 +452,7 @@ def serve_pdf(pdf_id):
 
 @app.route("/", methods=["GET"])
 def healthcheck():
-    return "Apex Blueprint API (Render + S3, single-prompt version) is running", 200
+    return "Apex Blueprint API (Render + S3, single-prompt cleaned version) is running", 200
 
 
 if __name__ == "__main__":
