@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import os
 import uuid
+import re  # NEW: for cleaning up markdown-like symbols
 
 from openai import OpenAI
 import boto3
@@ -33,6 +34,7 @@ s3_client = boto3.client("s3", region_name=S3_REGION)
 def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: str):
     """
     Turn the blueprint text into a clean, branded PDF with clearer sections.
+    Removes raw ### and ** markers and formats headings/bullets nicely.
     """
     styles = getSampleStyleSheet()
 
@@ -74,6 +76,16 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         textColor=colors.HexColor("#0A1A2F"),
         spaceBefore=14,
         spaceAfter=6,
+    )
+
+    subheading_style = ParagraphStyle(
+        "SubHeadingStyle",
+        parent=styles["Heading3"],
+        fontName="Helvetica-Bold",
+        fontSize=12,
+        textColor=colors.HexColor("#0A1A2F"),
+        spaceBefore=10,
+        spaceAfter=4,
     )
 
     body_style = ParagraphStyle(
@@ -138,7 +150,9 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     # Simple horizontal rule
     story.append(
         Paragraph(
-            "<para alignment='center'><font size=8 color='#CCCCCC'>────────────────────────────</font></para>",
+            "<para alignment='center'><font size=8 color='#CCCCCC'>"
+            "────────────────────────────"
+            "</font></para>",
             small_label_style,
         )
     )
@@ -154,8 +168,13 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     )
     story.append(Spacer(1, 12))
 
+    # Helper: convert **bold** to <b>bold</b> and clean up
+    def convert_inline_formatting(text: str) -> str:
+        # Convert **bold** to <b>bold</b>
+        text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+        return text
+
     # ------- BODY FROM BLUEPRINT TEXT -------
-    # We’ll treat any line that starts with a known heading pattern as a heading.
     lines = blueprint_text.splitlines()
     for raw_line in lines:
         line = raw_line.strip()
@@ -163,21 +182,45 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
             story.append(Spacer(1, 4))
             continue
 
-        # Simple heading detection: lines that look like "SECTION X:" or "TITLE:"
-        if (
-            line.upper().startswith("TITLE:")
-            or line.upper().startswith("SECTION ")
-            or line.upper().startswith("WIN TITLE")
-            or line.upper().startswith("WEEK ")
-            or line.upper().startswith("SUBSECTION:")
-        ):
-            story.append(Paragraph(line, heading_style))
-        else:
-            story.append(Paragraph(line, body_style))
+        style = body_style
+        cleaned = line
+
+        # 1) Strip leading markdown-style ### / ## / #
+        if cleaned.startswith("#"):
+            cleaned = cleaned.lstrip("#").strip()
+            style = heading_style
+
+        # 2) Detect our main heading patterns
+        upper = cleaned.upper()
+        if upper.startswith("TITLE:"):
+            style = heading_style
+        elif upper.startswith("SECTION "):
+            style = heading_style
+        elif upper.startswith("SUBSECTION:"):
+        #   "Subsection: Your Goals"
+            style = subheading_style
+        elif upper.startswith("WIN TITLE"):
+            style = subheading_style
+        elif upper.startswith("WEEK "):
+            style = subheading_style
+
+        # 3) Bullet lines: "- something" or "* something"
+        if cleaned.startswith("- "):
+            cleaned = "• " + cleaned[2:].strip()
+        elif cleaned.startswith("* "):
+            # If the model ever uses "* " bullets, normalize too
+            cleaned = "• " + cleaned[2:].strip()
+
+        # 4) Replace inline **bold** with real bold tags
+        cleaned = convert_inline_formatting(cleaned)
+
+        story.append(Paragraph(cleaned, style))
 
     # ------- CTA BLOCK AT END -------
     story.append(Spacer(1, 20))
-    story.append(Paragraph("Next Step: Book Your Automation Strategy Call", cta_heading_style))
+    story.append(
+        Paragraph("Next Step: Book Your Automation Strategy Call", cta_heading_style)
+    )
     story.append(
         Paragraph(
             "On this call, we’ll walk through your blueprint together, "
@@ -245,7 +288,8 @@ IMPORTANT WRITING RULES:
 - Sound calm, professional, and confident.
 - Speak directly to the reader using “you” and “your business”.
 - Never mention AI, prompts, or that this text was generated.
-- Do NOT use markdown symbols (#, ##, ###). Write plain text headings.
+- Do NOT use markdown symbols (#, ##, ###).
+- Do NOT use asterisks (*) for bold or emphasis.
 - Do NOT include emojis.
 - Do NOT refer to “form”, “survey”, or “questions”.
 - No long paragraphs; keep everything concise.
