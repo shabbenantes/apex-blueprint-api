@@ -183,12 +183,16 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
 
         # Heading detection:
         # - Top-level sections: "AI Automation Blueprint", "SECTION 1:", etc.
-        # - Subheadings: any short line ending in ":" (e.g., "What This Fixes:")
+        # - Fix headings: "FIX 1 – ...", "FIX 2 – ...", etc.
+        # - Older "WIN" headings still treated as headings just in case.
+        # - Any short line ending in ":" (e.g., "What This Fixes:")
+        upper = line.upper()
         if (
-            line.upper().startswith("AI AUTOMATION BLUEPRINT")
-            or line.upper().startswith("SECTION ")
-            or line.upper().startswith("FIX ")
-            or line.upper().startswith("WEEK ")
+            upper.startswith("AI AUTOMATION BLUEPRINT")
+            or upper.startswith("SECTION ")
+            or upper.startswith("FIX ")
+            or upper.startswith("WIN ")
+            or upper.startswith("WEEK ")
             or (len(line) <= 60 and line.endswith(":"))
         ):
             story.append(Paragraph(line, heading_style))
@@ -230,11 +234,7 @@ def run_blueprint():
     data = request.get_json(force=True) or {}
 
     # Log the raw payload to Render logs (helps if GHL changes shape)
-    print(
-        "Incoming payload:",
-        json.dumps(data, indent=2, ensure_ascii=False),
-        flush=True,
-    )
+    print("Incoming payload:", json.dumps(data, indent=2, ensure_ascii=False), flush=True)
 
     # Contact info
     contact = data.get("contact", {}) or data.get("contact_data", {}) or {}
@@ -259,19 +259,23 @@ def run_blueprint():
     email = clean_value(contact.get("email"))
 
     business_name = clean_value(
-        form_fields.get("business_name") or form_fields.get("Business Name")
+        form_fields.get("business_name")
+        or form_fields.get("Business Name")
     )
 
     business_type = clean_value(
-        form_fields.get("business_type") or form_fields.get("Business Type")
+        form_fields.get("business_type")
+        or form_fields.get("Business Type")
     )
 
     services_offered = clean_value(
-        form_fields.get("services_offered") or form_fields.get("Services You Offer")
+        form_fields.get("services_offered")
+        or form_fields.get("Services You Offer")
     )
 
     ideal_customer = clean_value(
-        form_fields.get("ideal_customer") or form_fields.get("Ideal Customer")
+        form_fields.get("ideal_customer")
+        or form_fields.get("Ideal Customer")
     )
 
     bottlenecks = clean_value(
@@ -295,11 +299,13 @@ def run_blueprint():
     )
 
     leads_per_week = clean_value(
-        form_fields.get("leads_per_week") or form_fields.get("Leads Per Week")
+        form_fields.get("leads_per_week")
+        or form_fields.get("Leads Per Week")
     )
 
     jobs_per_week = clean_value(
-        form_fields.get("jobs_per_week") or form_fields.get("Jobs Per Week")
+        form_fields.get("jobs_per_week")
+        or form_fields.get("Jobs Per Week")
     )
 
     growth_goals = clean_value(
@@ -317,6 +323,33 @@ def run_blueprint():
         or form_fields.get("Anything Else We Should Know")
     )
 
+    # NEW: Team size
+    team_size_raw = clean_value(
+        form_fields.get("team_size")
+        or form_fields.get("Team Size (Number of Employees)")
+        or form_fields.get("Team Size")
+        or form_fields.get("Number of Employees")
+    )
+
+    team_size_display = team_size_raw or "Not specified"
+
+    # Derive a "stage" label if we can parse a number
+    team_stage = "Not specified"
+    try:
+        if team_size_raw and team_size_raw.isdigit():
+            n = int(team_size_raw)
+            if n == 1:
+                team_stage = "Solo operator (1 person)"
+            elif 2 <= n <= 5:
+                team_stage = "Small team (2–5 people)"
+            elif 6 <= n <= 10:
+                team_stage = "Growing team (6–10 people)"
+            else:
+                team_stage = "Larger team (11+ people)"
+    except Exception:
+        # If parsing fails, just leave "Not specified"
+        pass
+
     # Fallback labels for the prompt
     bn = business_name or "Not specified"
     bt = business_type or "Not specified"
@@ -331,6 +364,8 @@ def run_blueprint():
     gg = growth_goals or "Not specified"
     fr = frustrations or "Not specified"
     en = extra_notes or "Not specified"
+    ts = team_size_display
+    ts_stage = team_stage
 
     raw_json = json.dumps(data, indent=2, ensure_ascii=False)
 
@@ -346,8 +381,7 @@ STYLE RULES
 - Use simple business language (no tech jargon).
 - Sound calm, professional, and confident.
 - Speak directly to the owner as "you" and "your business".
-- Prefer short paragraphs and bullet points over long blocks of text.
-- Avoid generic filler intros; get straight to the useful information.
+- Prefer short paragraphs and bullet points.
 - Do NOT mention AI, prompts, JSON, or that this was generated.
 - Do NOT scold the owner for missing information.
 - If a detail is not specified, you may either skip it or briefly say "Not specified".
@@ -357,6 +391,8 @@ OWNER INFO (parsed fields)
 - Owner name: {name}
 - Business name: {bn}
 - Business type: {bt}
+- Team size (number of employees): {ts}
+- Team stage: {ts_stage}
 - Services you offer: {so}
 - Ideal customer: {ic}
 - Biggest operational bottlenecks: {bo}
@@ -383,12 +419,14 @@ AI Automation Blueprint
 Prepared for: {name}
 Business: {bn}
 Business type: {bt}
+Team size: {ts} (Stage: {ts_stage})
 
 SECTION 1: Quick Snapshot
 Write 4–6 short bullets describing:
 - What type of business they run (use their exact business type or services if provided).
 - Their main pain points and bottlenecks, using their language where possible.
 - Where time or money is being lost today.
+- How their current team size and stage affect the way work gets done.
 - The biggest opportunities for automation based on their answers.
 - Any extra context from the JSON that clearly matters.
 
@@ -406,13 +444,13 @@ Where Time Is Being Lost:
 
 Opportunities You’re Not Using Yet:
 - 4–6 bullets describing automation opportunities that clearly
-  connect to their specific situation.
+  connect to their specific situation and team size.
 
 SECTION 3: Your Top 3 Fixes
 
 FIX 1 – Short, outcome-focused title:
 What This Fixes:
-- 2–4 bullets tied directly to their stated bottlenecks and frustrations.
+- 2–4 bullets tied directly to their stated bottlenecks, frustrations, and team stage.
 
 What This Does For You:
 - 3–4 bullets describing benefits (time saved, more booked jobs, fewer headaches).
@@ -434,13 +472,14 @@ from their answers (do not assume they are fully manual if they mention tools).
 Then write 4–6 bullets describing:
 - Strengths they already have.
 - Weak spots that are slowing them down.
+- How their team size and stage affect their current score.
 - What the score means in everyday language.
 - What is most important to fix first.
 
 SECTION 5: Your 30-Day Action Plan
 
 Week 1 — Stabilize the Business
-- 3–4 bullets based on their current chaos and bottlenecks.
+- 3–4 bullets based on their current chaos, team size, and bottlenecks.
 
 Week 2 — Capture and Convert More Leads
 - 3–4 bullets focused on lead handling, follow-up, and booking.
@@ -450,11 +489,13 @@ Week 3 — Improve Customer Experience
 
 Week 4 — Optimize and Prepare to Scale
 - 3–4 bullets focused on visibility, reporting, and tightening up automations.
+- Where appropriate, mention how this prepares their team size for growth.
 
 SECTION 6: Final Recommendations
 Write 5–7 bullets giving clear, calm guidance:
 - What to build first for the fastest improvement.
 - What will move them toward their 6–12 month goals.
+- How their current team size and stage shape the order of priorities.
 - What they can safely ignore for now.
 - What they should come prepared with for a strategy call.
 - Where their biggest long-term opportunity is.
@@ -529,7 +570,7 @@ def serve_pdf(pdf_id):
 
 @app.route("/", methods=["GET"])
 def healthcheck():
-    return "Apex Blueprint API (Render + S3, template-ready single-prompt) is running", 200
+    return "Apex Blueprint API (Render + S3, template-ready single-prompt with team size) is running", 200
 
 
 if __name__ == "__main__":
