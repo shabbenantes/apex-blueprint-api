@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 import os
 import uuid
-import json  # to log raw JSON for debugging
+import json
 
 from openai import OpenAI
 import boto3
@@ -19,7 +19,7 @@ app = Flask(__name__)
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # ---------- S3 CONFIG ----------
-# Make sure these are set in Render:
+# In Render:
 #   S3_BUCKET_NAME  = apex-blueprints-prod
 #   S3_REGION       = us-east-2
 S3_BUCKET = os.environ.get("S3_BUCKET_NAME")
@@ -181,16 +181,12 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
             story.append(Spacer(1, 4))
             continue
 
-        # Heading detection:
-        # - Top-level sections: "SECTION 1:", etc.
-        # - Fix headings: "FIX 1 – ..."
-        # - Week headings: "Week 1 — ..."
-        # - Subheadings: any short line ending in ":" (e.g., "What This Fixes:")
+        # Headings: sections + FIX + WEEKS + any short line ending in ":"
         if (
             line.upper().startswith("SECTION ")
             or line.upper().startswith("FIX ")
             or line.upper().startswith("WEEK ")
-            or (len(line) <= 70 and line.endswith(":"))
+            or (len(line) <= 60 and line.endswith(":"))
         ):
             story.append(Paragraph(line, heading_style))
         else:
@@ -244,7 +240,7 @@ def run_blueprint():
         or {}
     )
 
-    # Convenience values (using clean_value + multiple key options)
+    # ---------- Extract fields ----------
     name = clean_value(
         contact.get("full_name")
         or contact.get("name")
@@ -255,73 +251,56 @@ def run_blueprint():
     email = clean_value(contact.get("email"))
 
     business_name = clean_value(
-        form_fields.get("business_name")
-        or form_fields.get("Business Name")
+        form_fields.get("business_name") or form_fields.get("Business Name")
     )
-
     business_type = clean_value(
-        form_fields.get("business_type")
-        or form_fields.get("Business Type")
+        form_fields.get("business_type") or form_fields.get("Business Type")
     )
-
     services_offered = clean_value(
-        form_fields.get("services_offered")
-        or form_fields.get("Services You Offer")
+        form_fields.get("services_offered") or form_fields.get("Services You Offer")
     )
-
     ideal_customer = clean_value(
-        form_fields.get("ideal_customer")
-        or form_fields.get("Ideal Customer")
+        form_fields.get("ideal_customer") or form_fields.get("Ideal Customer")
     )
-
     bottlenecks = clean_value(
         form_fields.get("bottlenecks")
         or form_fields.get("Biggest Operational Bottlenecks")
     )
-
     manual_tasks = clean_value(
         form_fields.get("manual_tasks")
         or form_fields.get("Manual Tasks You Want Automated")
     )
-
     current_software = clean_value(
         form_fields.get("current_software")
         or form_fields.get("Software You Currently Use")
     )
-
     lead_response_time = clean_value(
         form_fields.get("lead_response_time")
         or form_fields.get("Average Lead Response Time")
     )
-
     leads_per_week = clean_value(
-        form_fields.get("leads_per_week")
-        or form_fields.get("Leads Per Week")
+        form_fields.get("leads_per_week") or form_fields.get("Leads Per Week")
     )
-
     jobs_per_week = clean_value(
-        form_fields.get("jobs_per_week")
-        or form_fields.get("Jobs Per Week")
+        form_fields.get("jobs_per_week") or form_fields.get("Jobs Per Week")
     )
-
     growth_goals = clean_value(
-        form_fields.get("growth_goals_6_12_months")
+        form_fields.get("growth_goals")
+        or form_fields.get("growth_goals_6_12_months")
         or form_fields.get("Growth Goals (6–12 months)")
     )
-
     frustrations = clean_value(
-        form_fields.get("what_frustrates_you_most")
+        form_fields.get("frustrations")
         or form_fields.get("What Frustrates You Most")
     )
-
     extra_notes = clean_value(
-        form_fields.get("anything_else_we_should_know")
+        form_fields.get("extra_notes")
         or form_fields.get("Anything Else We Should Know")
     )
-
-    num_employees = clean_value(
-        form_fields.get("number_of_employees")
+    team_size = clean_value(
+        form_fields.get("team_size")
         or form_fields.get("Number of Employees")
+        or form_fields.get("number_of_employees")
     )
 
     # Fallback labels for the prompt
@@ -338,11 +317,11 @@ def run_blueprint():
     gg = growth_goals or "Not specified"
     fr = frustrations or "Not specified"
     en = extra_notes or "Not specified"
-    ne = num_employees or "Not specified"
+    ts = team_size or "Not specified"
 
     raw_json = json.dumps(data, indent=2, ensure_ascii=False)
 
-    # --------- SINGLE PROMPT (with Fix labels + graph markers + data block) ----------
+    # --------- SINGLE PROMPT (adds team size + graph markers + DATA block) ----------
     prompt = f"""
 You are APEX AI, a senior automation consultant who writes premium,
 clear, confidence-building business blueprints for home-service owners.
@@ -351,16 +330,16 @@ Your job is to create a clean, structured, easy-to-read written blueprint
 that feels clearly based on the owner's answers.
 
 STYLE RULES
-- Use simple business language (no tech jargon, no words like CRM, API, backend, etc.).
+- Use simple business language (no tech jargon).
 - Sound calm, professional, and confident.
 - Speak directly to the owner as "you" and "your business".
 - Prefer short paragraphs and bullet points.
 - Do NOT mention AI, prompts, JSON, or that this was generated.
 - Do NOT scold the owner for missing information.
-- If a detail is not specified, you may skip it or briefly say "Not specified".
-- Do NOT include any separate title line like "AI Automation Blueprint".
-  The PDF already has a title. Start directly with the "Prepared for" line.
+- If a detail is not specified, you may either skip it or briefly say "Not specified".
 - Do NOT include any closing line like "END OF BLUEPRINT".
+- Do NOT include a separate title line like "AI Automation Blueprint". The PDF already has a title.
+  Start directly with the "Prepared for" line.
 
 OWNER INFO (parsed fields)
 - Owner name: {name}
@@ -374,10 +353,10 @@ OWNER INFO (parsed fields)
 - Average lead response time: {lrt}
 - Leads per week: {lpw}
 - Jobs per week: {jpw}
-- Number of employees: {ne}
 - Growth goals (6–12 months): {gg}
 - What frustrates you most: {fr}
 - Extra notes: {en}
+- Team size / number of employees: {ts}
 
 RAW FORM DATA (JSON FROM GOHIGHLEVEL)
 Use this as the source of truth for the owner's answers.
@@ -395,6 +374,7 @@ Business type: {bt}
 SECTION 1: Quick Snapshot
 Write 4–6 short bullets describing:
 - What type of business they run (use their exact business type or services if provided).
+- Roughly how big their team is (team size / number of employees) and what that means for capacity.
 - Their main pain points and bottlenecks, using their language where possible.
 - Where time or money is being lost today.
 - The biggest opportunities for automation based on their answers.
@@ -408,15 +388,17 @@ Your Goals:
 Your Challenges:
 - 3–6 bullets summarizing the problems they described
   (capacity, leads, staffing, follow-up, software issues, etc.).
+- If their team size creates challenges or limits, mention that here.
 
 Where Time Is Being Lost:
 - 3–5 bullets describing the manual tasks, delays, or bottlenecks.
+- If team size affects who does what, you may mention it here when relevant.
 
 Opportunities You’re Not Using Yet:
 - 4–6 bullets describing automation opportunities that clearly
   connect to their specific situation.
 
-SECTION 3: Your Top 3 Fixes
+SECTION 3: Your Top 3 Automation Fixes
 
 FIX 1 – Short, outcome-focused title:
 What This Fixes:
@@ -442,14 +424,15 @@ from their answers (do not assume they are fully manual if they mention tools).
 Then write 4–6 bullets describing:
 - Strengths they already have.
 - Weak spots that are slowing them down.
+- How their current team size (number of employees) supports or limits automation.
 - What the score means in everyday language.
 - What is most important to fix first.
 
-At the end of this section, add a short sub-block called:
 Suggested Graph Views:
 - Graph: Leads per Week vs Jobs per Week
 - Graph: Response Time vs Likely Conversion
 - Graph: Manual Tasks vs Automated Opportunities
+- Graph: Team Size vs Workload
 
 SECTION 5: Your 30-Day Action Plan
 
@@ -464,6 +447,7 @@ Week 3 — Improve Customer Experience
 
 Week 4 — Optimize and Prepare to Scale
 - 3–4 bullets focused on visibility, reporting, and tightening up automations.
+- You may mention improving how work is distributed across their team.
 
 SECTION 6: Final Recommendations
 Write 5–7 bullets giving clear, calm guidance:
@@ -474,16 +458,16 @@ Write 5–7 bullets giving clear, calm guidance:
 - Where their biggest long-term opportunity is.
 
 DATA (for internal use):
-At the very end, add this block exactly with bullet points, using the
-parsed values above (NOT new guesses):
+At the very end, add this block exactly with bullet points,
+using the parsed values above (NOT new guesses):
 
 Data:
 - business_name: {bn}
 - business_type: {bt}
+- team_size: {ts}
 - leads_per_week: {lpw}
 - jobs_per_week: {jpw}
 - average_lead_response_time: {lrt}
-- number_of_employees: {ne}
 - growth_goals: {gg}
 - biggest_bottlenecks: {bo}
 - manual_tasks: {mt}
@@ -501,7 +485,7 @@ Data:
         full_text = response.output[0].content[0].text.strip()
         print("Full blueprint length (chars):", len(full_text), flush=True)
 
-        # Strip off the DATA block for the PDF + main blueprint text
+        # Separate main blueprint from DATA block
         data_block = ""
         split_marker = "\nDATA (for internal use):"
         if split_marker in full_text:
@@ -517,7 +501,7 @@ Data:
         if marker in blueprint_text:
             summary_section = blueprint_text.split(marker, 1)[0].strip()
 
-        # --------- GENERATE PDF LOCALLY (WITHOUT DATA BLOCK) ----------
+        # --------- GENERATE PDF LOCALLY ----------
         pdf_id = uuid.uuid4().hex
         pdf_filename = f"blueprint_{pdf_id}.pdf"
         pdf_dir = "/tmp"
@@ -550,10 +534,11 @@ Data:
                 "blueprint": blueprint_text,
                 "summary": summary_section,
                 "pdf_url": pdf_url,
-                "data_block": data_block,  # for future internal use
                 "name": name,
                 "email": email,
                 "business_name": business_name,
+                "team_size": team_size,
+                "data_block": data_block,
             }
         )
 
@@ -572,7 +557,7 @@ def serve_pdf(pdf_id):
 
 @app.route("/", methods=["GET"])
 def healthcheck():
-    return "Apex Blueprint API (Render + S3, template-ready single-prompt, Option C) is running", 200
+    return "Apex Blueprint API (Render + S3, template-ready single-prompt, team-size aware) is running", 200
 
 
 if __name__ == "__main__":
