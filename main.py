@@ -2,6 +2,9 @@ from flask import Flask, request, jsonify
 import os
 import uuid
 import json
+import re
+import time
+from typing import Dict, Any, Optional, Tuple
 
 from openai import OpenAI
 import boto3
@@ -15,34 +18,25 @@ from reportlab.lib import colors
 
 app = Flask(__name__)
 
-# --------------------------------------------------------------------
-# BLAND CONTEXT STORE (temporary, in-memory)
-# Keyed by phone number (ideally E.164: +1XXXXXXXXXX)
-# NOTE: This resets if Render restarts/redeploys.
-# --------------------------------------------------------------------
-BLAND_CONTEXT_BY_PHONE = {}
-
 # ---------- OpenAI ----------
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # ---------- S3 CONFIG ----------
-# In Render:
-#   S3_BUCKET_NAME  = apex-blueprints-prod
-#   S3_REGION       = us-east-2
 S3_BUCKET = os.environ.get("S3_BUCKET_NAME")
 S3_REGION = os.environ.get("S3_REGION", "us-east-2")
-
 s3_client = boto3.client("s3", region_name=S3_REGION)
 
+# ---------- Context store (in-memory) ----------
+# NOTE: This resets if Render restarts/redeploys. It's still very useful for calls that happen right after form submit.
+CONTEXT_TTL_SECONDS = int(os.environ.get("CONTEXT_TTL_SECONDS", "86400"))  # 24h default
+_CONTEXT_BY_PHONE: Dict[str, Dict[str, Any]] = {}  # key: normalized phone digits (no +), value: {context..., expires_at}
+
 
 # --------------------------------------------------------------------
-# SMALL HELPER: CLEAN FIELD VALUES
+# HELPERS
 # --------------------------------------------------------------------
 def clean_value(v: object) -> str:
-    """
-    Turn raw values from GHL into clean strings.
-    Treat 'null', 'None', 'N/A', etc. as empty.
-    """
+    """Turn raw values into clean strings. Treat 'null', 'None', 'N/A', etc. as empty."""
     if v is None:
         return ""
     s = str(v).strip()
@@ -51,13 +45,68 @@ def clean_value(v: object) -> str:
     return s
 
 
+def normalize_phone(phone: str) -> str:
+    """
+    Normalize to digits only (no +). Examples:
+      +1 (415) 555-1212 -> 14155551212
+      415-555-1212 -> 4155551212 (we'll try to make it 11 digits if US)
+    """
+    p = clean_value(phone)
+    digits = re.sub(r"\D+", "", p)
+    # If they gave 10 digits, assume US and prefix 1
+    if len(digits) == 10:
+        digits = "1" + digits
+    return digits
+
+
+def to_e164(phone_digits: str) -> str:
+    """Convert digits-only (usually 11 with leading 1) into E.164 like +14155551212."""
+    d = re.sub(r"\D+", "", phone_digits or "")
+    if not d:
+        return ""
+    if d.startswith("1") and len(d) == 11:
+        return f"+{d}"
+    # fallback
+    return f"+{d}"
+
+
+def cleanup_context_store() -> None:
+    now = time.time()
+    expired = [k for k, v in _CONTEXT_BY_PHONE.items() if v.get("expires_at", 0) <= now]
+    for k in expired:
+        _CONTEXT_BY_PHONE.pop(k, None)
+
+
+def store_context_for_phone(phone: str, context: Dict[str, Any]) -> None:
+    cleanup_context_store()
+    key = normalize_phone(phone)
+    if not key:
+        return
+    _CONTEXT_BY_PHONE[key] = {
+        **context,
+        "expires_at": time.time() + CONTEXT_TTL_SECONDS,
+    }
+
+
+def get_context_for_phone(phone: str) -> Optional[Dict[str, Any]]:
+    cleanup_context_store()
+    key = normalize_phone(phone)
+    if not key:
+        return None
+    item = _CONTEXT_BY_PHONE.get(key)
+    if not item:
+        return None
+    # don't leak expires_at
+    out = dict(item)
+    out.pop("expires_at", None)
+    return out
+
+
 # --------------------------------------------------------------------
 # PDF GENERATION
 # --------------------------------------------------------------------
 def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: str):
-    """
-    Turn the blueprint text into a clean, branded PDF with clearer sections.
-    """
+    """Turn the blueprint text into a clean, branded PDF with clearer sections."""
     styles = getSampleStyleSheet()
 
     title_style = ParagraphStyle(
@@ -66,7 +115,7 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         fontName="Helvetica-Bold",
         fontSize=22,
         alignment=TA_CENTER,
-        textColor=colors.HexColor("#0A1A2F"),  # deep navy
+        textColor=colors.HexColor("#0A1A2F"),
         spaceAfter=6,
     )
 
@@ -145,11 +194,9 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
 
     story = []
 
-    # ------- COVER BLOCK -------
+    # Cover
     story.append(Paragraph("Apex Automation", title_style))
-    story.append(
-        Paragraph("AI Automation Blueprint for Your Service Business", tagline_style)
-    )
+    story.append(Paragraph("AI Automation Blueprint for Your Service Business", tagline_style))
 
     owner_line = f"Prepared for: {name if name else 'Your Business Owner'}"
     if business_name:
@@ -159,7 +206,6 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     story.append(Paragraph("30-Day Automation Roadmap", small_label_style))
     story.append(Spacer(1, 18))
 
-    # Simple horizontal rule
     story.append(
         Paragraph(
             "<para alignment='center'><font size=8 color='#CCCCCC'>"
@@ -170,7 +216,6 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     )
     story.append(Spacer(1, 12))
 
-    # Short intro
     story.append(
         Paragraph(
             "This blueprint shows where your business is currently leaking time and money, "
@@ -180,15 +225,13 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
     )
     story.append(Spacer(1, 12))
 
-    # ------- BODY FROM BLUEPRINT TEXT -------
-    lines = blueprint_text.splitlines()
-    for raw_line in lines:
+    # Body
+    for raw_line in blueprint_text.splitlines():
         line = raw_line.strip()
         if not line:
             story.append(Spacer(1, 4))
             continue
 
-        # Headings: sections + FIX + WEEKS + any short line ending in ":"
         if (
             line.upper().startswith("SECTION ")
             or line.upper().startswith("FIX ")
@@ -199,11 +242,9 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
         else:
             story.append(Paragraph(line, body_style))
 
-    # ------- CTA BLOCK AT END -------
+    # CTA
     story.append(Spacer(1, 20))
-    story.append(
-        Paragraph("Next Step: Book Your Automation Strategy Call", cta_heading_style)
-    )
+    story.append(Paragraph("Next Step: Book Your Automation Strategy Call", cta_heading_style))
     story.append(
         Paragraph(
             "On this call, we’ll walk through your blueprint together, "
@@ -222,24 +263,36 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
 
 
 # --------------------------------------------------------------------
-# /run – SINGLE-PROMPT BLUEPRINT GENERATION
+# CONTEXT LOOKUP FOR BLAND (or anything)
+# --------------------------------------------------------------------
+@app.route("/context/<phone>", methods=["GET"])
+def context_lookup(phone: str):
+    """
+    Fetch the saved context for a phone number.
+    Example: /context/+14155551212  or /context/14155551212
+    """
+    ctx = get_context_for_phone(phone)
+    if not ctx:
+        return jsonify({"success": False, "error": "no context found for that phone", "phone": phone}), 404
+    return jsonify({"success": True, "phone": phone, "context": ctx})
+
+
+# --------------------------------------------------------------------
+# /run – BLUEPRINT GENERATION
 # --------------------------------------------------------------------
 @app.route("/run", methods=["POST"])
 def run_blueprint():
     """
-    Called by your automation system when the form is submitted.
-    Takes the contact + form answers, generates a blueprint in ONE AI call,
-    generates a PDF, uploads it to S3, and returns everything as JSON.
+    Called by GoHighLevel on form submit.
+    Generates blueprint + summary + PDF URL, returns JSON.
+    Also stores a small context blob keyed by the lead phone number for later lookup.
     """
+    t0 = time.time()
     data = request.get_json(force=True) or {}
 
-    # Log the raw payload to Render logs (helps if GHL changes shape)
-    print("Incoming payload:", json.dumps(data, indent=2, ensure_ascii=False), flush=True)
+    print("Incoming payload keys:", list(data.keys()), flush=True)
 
-    # Contact info
     contact = data.get("contact", {}) or data.get("contact_data", {}) or {}
-
-    # Form fields (from your webhook body)
     form_fields = (
         data.get("form_fields")
         or data.get("form")
@@ -247,7 +300,7 @@ def run_blueprint():
         or {}
     )
 
-    # ---------- Extract fields ----------
+    # Extract contact basics
     name = clean_value(
         contact.get("full_name")
         or contact.get("name")
@@ -256,67 +309,28 @@ def run_blueprint():
     ) or "there"
 
     email = clean_value(contact.get("email"))
+    phone_raw = clean_value(contact.get("phone") or contact.get("phone_number") or contact.get("phoneNumber"))
+    phone_digits = normalize_phone(phone_raw)
+    phone_e164 = to_e164(phone_digits)
 
-    # NEW (non-destructive): try to capture phone for Bland context lookup
-    phone = clean_value(
-        contact.get("phone")
-        or contact.get("phone_number")
-        or contact.get("phoneNumber")
-        or contact.get("mobile")
-        or contact.get("mobile_phone")
-        or form_fields.get("phone")
-        or form_fields.get("phone_number")
-        or form_fields.get("Phone")
-        or form_fields.get("Phone Number")
-    )
-
-    business_name = clean_value(
-        form_fields.get("business_name") or form_fields.get("Business Name")
-    )
-    business_type = clean_value(
-        form_fields.get("business_type") or form_fields.get("Business Type")
-    )
-    services_offered = clean_value(
-        form_fields.get("services_offered") or form_fields.get("Services You Offer")
-    )
-    ideal_customer = clean_value(
-        form_fields.get("ideal_customer") or form_fields.get("Ideal Customer")
-    )
-    bottlenecks = clean_value(
-        form_fields.get("bottlenecks")
-        or form_fields.get("Biggest Operational Bottlenecks")
-    )
-    manual_tasks = clean_value(
-        form_fields.get("manual_tasks")
-        or form_fields.get("Manual Tasks You Want Automated")
-    )
-    current_software = clean_value(
-        form_fields.get("current_software")
-        or form_fields.get("Software You Currently Use")
-    )
-    lead_response_time = clean_value(
-        form_fields.get("lead_response_time")
-        or form_fields.get("Average Lead Response Time")
-    )
-    leads_per_week = clean_value(
-        form_fields.get("leads_per_week") or form_fields.get("Leads Per Week")
-    )
-    jobs_per_week = clean_value(
-        form_fields.get("jobs_per_week") or form_fields.get("Jobs Per Week")
-    )
+    # Extract form fields
+    business_name = clean_value(form_fields.get("business_name") or form_fields.get("Business Name"))
+    business_type = clean_value(form_fields.get("business_type") or form_fields.get("Business Type"))
+    services_offered = clean_value(form_fields.get("services_offered") or form_fields.get("Services You Offer"))
+    ideal_customer = clean_value(form_fields.get("ideal_customer") or form_fields.get("Ideal Customer"))
+    bottlenecks = clean_value(form_fields.get("bottlenecks") or form_fields.get("Biggest Operational Bottlenecks"))
+    manual_tasks = clean_value(form_fields.get("manual_tasks") or form_fields.get("Manual Tasks You Want Automated"))
+    current_software = clean_value(form_fields.get("current_software") or form_fields.get("Software You Currently Use"))
+    lead_response_time = clean_value(form_fields.get("lead_response_time") or form_fields.get("Average Lead Response Time"))
+    leads_per_week = clean_value(form_fields.get("leads_per_week") or form_fields.get("Leads Per Week"))
+    jobs_per_week = clean_value(form_fields.get("jobs_per_week") or form_fields.get("Jobs Per Week"))
     growth_goals = clean_value(
         form_fields.get("growth_goals")
         or form_fields.get("growth_goals_6_12_months")
         or form_fields.get("Growth Goals (6–12 months)")
     )
-    frustrations = clean_value(
-        form_fields.get("frustrations")
-        or form_fields.get("What Frustrates You Most")
-    )
-    extra_notes = clean_value(
-        form_fields.get("extra_notes")
-        or form_fields.get("Anything Else We Should Know")
-    )
+    frustrations = clean_value(form_fields.get("frustrations") or form_fields.get("What Frustrates You Most"))
+    extra_notes = clean_value(form_fields.get("extra_notes") or form_fields.get("Anything Else We Should Know"))
     team_size = clean_value(
         form_fields.get("team_size")
         or form_fields.get("Number of Employees")
@@ -339,15 +353,22 @@ def run_blueprint():
     en = extra_notes or "Not specified"
     ts = team_size or "Not specified"
 
-    raw_json = json.dumps(data, indent=2, ensure_ascii=False)
+    # IMPORTANT: keep source JSON small to prevent slow OpenAI calls / timeouts
+    source_json = {
+        "contact": {
+            "name": name,
+            "email": email,
+            "phone_raw": phone_raw,
+            "phone_digits": phone_digits,
+            "phone_e164": phone_e164,
+        },
+        "form_fields": form_fields,
+    }
+    raw_json = json.dumps(source_json, indent=2, ensure_ascii=False)
 
-    # --------- SINGLE PROMPT (adds team size + graph markers + DATA block) ----------
     prompt = f"""
 You are APEX AI, a senior automation consultant who writes premium,
 clear, confidence-building business blueprints for home-service owners.
-
-Your job is to create a clean, structured, easy-to-read written blueprint
-that feels clearly based on the owner's answers.
 
 STYLE RULES
 - Use simple business language (no tech jargon).
@@ -356,10 +377,8 @@ STYLE RULES
 - Prefer short paragraphs and bullet points.
 - Do NOT mention AI, prompts, JSON, or that this was generated.
 - Do NOT scold the owner for missing information.
-- If a detail is not specified, you may either skip it or briefly say "Not specified".
-- Do NOT include any closing line like "END OF BLUEPRINT".
-- Do NOT include a separate title line like "AI Automation Blueprint". The PDF already has a title.
-  Start directly with the "Prepared for" line.
+- Do NOT include "END OF BLUEPRINT".
+- Start directly with the "Prepared for" line.
 
 OWNER INFO (parsed fields)
 - Owner name: {name}
@@ -378,11 +397,7 @@ OWNER INFO (parsed fields)
 - Extra notes: {en}
 - Team size / number of employees: {ts}
 
-RAW FORM DATA (JSON FROM GOHIGHLEVEL)
-Use this as the source of truth for the owner's answers.
-If you see more specific details in the JSON, you may use them,
-but never invent anything that is not clearly implied there.
-
+SOURCE DATA (JSON)
 {raw_json}
 
 NOW WRITE THE BLUEPRINT USING THIS EXACT STRUCTURE AND HEADINGS:
@@ -392,62 +407,33 @@ Business: {bn}
 Business type: {bt}
 
 SECTION 1: Quick Snapshot
-Write 4–6 short bullets describing:
-- What type of business they run (use their exact business type or services if provided).
-- Roughly how big their team is (team size / number of employees) and what that means for capacity.
-- Their main pain points and bottlenecks, using their language where possible.
-- Where time or money is being lost today.
-- The biggest opportunities for automation based on their answers.
-- Any extra context from the JSON that clearly matters.
+- 4–6 bullets.
 
 SECTION 2: What You Told Me
-
 Your Goals:
-- 3–5 bullets summarizing their 6–12 month goals and priorities.
-
+- 3–5 bullets.
 Your Challenges:
-- 3–6 bullets summarizing the problems they described
-  (capacity, leads, staffing, follow-up, software issues, etc.).
-- If their team size creates challenges or limits, mention that here.
-
+- 3–6 bullets.
 Where Time Is Being Lost:
-- 3–5 bullets describing the manual tasks, delays, or bottlenecks.
-- If team size affects who does what, you may mention it here when relevant.
-
+- 3–5 bullets.
 Opportunities You’re Not Using Yet:
-- 4–6 bullets describing automation opportunities that clearly
-  connect to their specific situation.
+- 4–6 bullets.
 
 SECTION 3: Your Top 3 Automation Fixes
-
-FIX 1 – Short, outcome-focused title:
+FIX 1 – Title:
 What This Fixes:
-- 2–4 bullets tied directly to their stated bottlenecks and frustrations.
-
+- 2–4 bullets.
 What This Does For You:
-- 3–4 bullets describing benefits (time saved, more booked jobs, fewer headaches).
-
+- 3–4 bullets.
 What’s Included:
-- 3–5 bullets describing simple, easy-to-understand automation actions
-  (for example: automatic follow-up, instant replies, reminders, scheduling flows).
-
-FIX 2 – Short, outcome-focused title:
-[Use the same structure as FIX 1, tailored to another important area.]
-
-FIX 3 – Short, outcome-focused title:
-[Use the same structure as FIX 1, tailored to another important area.]
+- 3–5 bullets.
+FIX 2 – Title:
+(same structure)
+FIX 3 – Title:
+(same structure)
 
 SECTION 4: Your Automation Scorecard (0–100)
-Give a clear, fair score from 0–100 based on how automated they seem
-from their answers (do not assume they are fully manual if they mention tools).
-
-Then write 4–6 bullets describing:
-- Strengths they already have.
-- Weak spots that are slowing them down.
-- How their current team size (number of employees) supports or limits automation.
-- What the score means in everyday language.
-- What is most important to fix first.
-
+- Score then 4–6 bullets.
 Suggested Graph Views:
 - Graph: Leads per Week vs Jobs per Week
 - Graph: Response Time vs Likely Conversion
@@ -455,32 +441,19 @@ Suggested Graph Views:
 - Graph: Team Size vs Workload
 
 SECTION 5: Your 30-Day Action Plan
-
 Week 1 — Stabilize the Business
-- 3–4 bullets based on their current chaos and bottlenecks.
-
+- 3–4 bullets.
 Week 2 — Capture and Convert More Leads
-- 3–4 bullets focused on lead handling, follow-up, and booking.
-
+- 3–4 bullets.
 Week 3 — Improve Customer Experience
-- 3–4 bullets focused on communication, reminders, scheduling flows, and reliability.
-
+- 3–4 bullets.
 Week 4 — Optimize and Prepare to Scale
-- 3–4 bullets focused on visibility, reporting, and tightening up automations.
-- You may mention improving how work is distributed across their team.
+- 3–4 bullets.
 
 SECTION 6: Final Recommendations
-Write 5–7 bullets giving clear, calm guidance:
-- What to build first for the fastest improvement.
-- What will move them toward their 6–12 month goals.
-- What they can safely ignore for now.
-- What they should come prepared with for a strategy call.
-- Where their biggest long-term opportunity is.
+- 5–7 bullets.
 
 DATA (for internal use):
-At the very end, add this block exactly with bullet points,
-using the parsed values above (NOT new guesses):
-
 Data:
 - business_name: {bn}
 - business_type: {bt}
@@ -497,15 +470,16 @@ Data:
 """
 
     try:
+        # OpenAI call
+        t_ai = time.time()
         response = client.responses.create(
             model="gpt-4.1-mini",
             input=prompt,
         )
-
         full_text = response.output[0].content[0].text.strip()
-        print("Full blueprint length (chars):", len(full_text), flush=True)
+        print("OpenAI seconds:", round(time.time() - t_ai, 2), "chars:", len(full_text), flush=True)
 
-        # Separate main blueprint from DATA block
+        # Split out DATA block
         data_block = ""
         split_marker = "\nDATA (for internal use):"
         if split_marker in full_text:
@@ -515,52 +489,53 @@ Data:
         else:
             blueprint_text = full_text
 
-        # Simple "summary" = everything up through Section 2
+        # Summary = up through Section 2
         summary_section = blueprint_text
         marker = "SECTION 3:"
         if marker in blueprint_text:
             summary_section = blueprint_text.split(marker, 1)[0].strip()
 
-        # --------- GENERATE PDF LOCALLY ----------
+        # Generate PDF
         pdf_id = uuid.uuid4().hex
         pdf_filename = f"blueprint_{pdf_id}.pdf"
-        pdf_dir = "/tmp"
-        pdf_path = os.path.join(pdf_dir, pdf_filename)
+        pdf_path = os.path.join("/tmp", pdf_filename)
 
+        t_pdf = time.time()
         generate_pdf(blueprint_text, pdf_path, name, business_name)
+        print("PDF seconds:", round(time.time() - t_pdf, 2), flush=True)
 
-        # --------- UPLOAD PDF TO S3 ----------
+        # Upload PDF
         if not S3_BUCKET:
             raise RuntimeError("S3_BUCKET_NAME env var is not set in Render")
 
         s3_key = f"blueprints/{pdf_filename}"
-
+        t_s3 = time.time()
         s3_client.upload_file(
             Filename=pdf_path,
             Bucket=S3_BUCKET,
             Key=s3_key,
-            ExtraArgs={
-                "ContentType": "application/pdf",
-                "ACL": "public-read",  # allow download by link
-            },
+            ExtraArgs={"ContentType": "application/pdf", "ACL": "public-read"},
         )
+        print("S3 seconds:", round(time.time() - t_s3, 2), flush=True)
 
         pdf_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
         print("Generated PDF URL:", pdf_url, flush=True)
 
-        # ------------------------------------------------------------
-        # Save context for Bland AI (prevents hallucinated blueprints)
-        # ------------------------------------------------------------
-        if phone:
-            BLAND_CONTEXT_BY_PHONE[phone] = {
-                "first_name": name if name else "",
-                "business_name": business_name if business_name else "",
-                "blueprint_summary": summary_section if summary_section else "",
-                "blueprint_url": pdf_url,
-            }
-            print("Saved Bland context for phone:", phone, flush=True)
-        else:
-            print("No phone found in payload; Bland context not saved.", flush=True)
+        # Store context for Bland (keyed by LEAD phone)
+        store_context_for_phone(
+            phone_raw,
+            {
+                "lead_name": name,
+                "lead_email": email,
+                "lead_phone_e164": phone_e164,
+                "business_name": business_name,
+                "business_type": business_type,
+                "summary": summary_section,
+                "pdf_url": pdf_url,
+            },
+        )
+
+        print("TOTAL /run seconds:", round(time.time() - t0, 2), flush=True)
 
         return jsonify(
             {
@@ -570,37 +545,14 @@ Data:
                 "pdf_url": pdf_url,
                 "name": name,
                 "email": email,
-                "business_name": business_name,
                 "team_size": team_size,
                 "data_block": data_block,
             }
         )
 
     except Exception as e:
-        print("Error generating blueprint:", e, flush=True)
+        print("Error generating blueprint:", repr(e), flush=True)
         return jsonify({"success": False, "error": str(e)}), 500
-
-
-# --------------------------------------------------------------------
-# /bland-context – returns the saved summary/url for Bland to read
-# --------------------------------------------------------------------
-@app.route("/bland-context", methods=["GET"])
-def bland_context():
-    phone = clean_value(request.args.get("phone"))
-    if not phone:
-        return jsonify({"success": False, "error": "missing phone"}), 400
-
-    ctx = BLAND_CONTEXT_BY_PHONE.get(phone)
-    if not ctx:
-        return jsonify(
-            {
-                "success": False,
-                "error": "no context found for that phone",
-                "phone": phone,
-            }
-        ), 404
-
-    return jsonify({"success": True, **ctx}), 200
 
 
 # --------------------------------------------------------------------
@@ -613,7 +565,7 @@ def serve_pdf(pdf_id):
 
 @app.route("/", methods=["GET"])
 def healthcheck():
-    return "Apex Blueprint API (Render + S3, template-ready single-prompt, team-size aware) is running", 200
+    return "Apex Blueprint API is running", 200
 
 
 if __name__ == "__main__":
