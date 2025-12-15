@@ -15,6 +15,13 @@ from reportlab.lib import colors
 
 app = Flask(__name__)
 
+# --------------------------------------------------------------------
+# BLAND CONTEXT STORE (temporary, in-memory)
+# Keyed by phone number (ideally E.164: +1XXXXXXXXXX)
+# NOTE: This resets if Render restarts/redeploys.
+# --------------------------------------------------------------------
+BLAND_CONTEXT_BY_PHONE = {}
+
 # ---------- OpenAI ----------
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
@@ -250,6 +257,19 @@ def run_blueprint():
 
     email = clean_value(contact.get("email"))
 
+    # NEW (non-destructive): try to capture phone for Bland context lookup
+    phone = clean_value(
+        contact.get("phone")
+        or contact.get("phone_number")
+        or contact.get("phoneNumber")
+        or contact.get("mobile")
+        or contact.get("mobile_phone")
+        or form_fields.get("phone")
+        or form_fields.get("phone_number")
+        or form_fields.get("Phone")
+        or form_fields.get("Phone Number")
+    )
+
     business_name = clean_value(
         form_fields.get("business_name") or form_fields.get("Business Name")
     )
@@ -443,7 +463,7 @@ Week 2 — Capture and Convert More Leads
 - 3–4 bullets focused on lead handling, follow-up, and booking.
 
 Week 3 — Improve Customer Experience
-- 3–4 bullets focused on communication, reminders, and reliability.
+- 3–4 bullets focused on communication, reminders, scheduling flows, and reliability.
 
 Week 4 — Optimize and Prepare to Scale
 - 3–4 bullets focused on visibility, reporting, and tightening up automations.
@@ -528,6 +548,20 @@ Data:
         pdf_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
         print("Generated PDF URL:", pdf_url, flush=True)
 
+        # ------------------------------------------------------------
+        # Save context for Bland AI (prevents hallucinated blueprints)
+        # ------------------------------------------------------------
+        if phone:
+            BLAND_CONTEXT_BY_PHONE[phone] = {
+                "first_name": name if name else "",
+                "business_name": business_name if business_name else "",
+                "blueprint_summary": summary_section if summary_section else "",
+                "blueprint_url": pdf_url,
+            }
+            print("Saved Bland context for phone:", phone, flush=True)
+        else:
+            print("No phone found in payload; Bland context not saved.", flush=True)
+
         return jsonify(
             {
                 "success": True,
@@ -545,6 +579,28 @@ Data:
     except Exception as e:
         print("Error generating blueprint:", e, flush=True)
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+# --------------------------------------------------------------------
+# /bland-context – returns the saved summary/url for Bland to read
+# --------------------------------------------------------------------
+@app.route("/bland-context", methods=["GET"])
+def bland_context():
+    phone = clean_value(request.args.get("phone"))
+    if not phone:
+        return jsonify({"success": False, "error": "missing phone"}), 400
+
+    ctx = BLAND_CONTEXT_BY_PHONE.get(phone)
+    if not ctx:
+        return jsonify(
+            {
+                "success": False,
+                "error": "no context found for that phone",
+                "phone": phone,
+            }
+        ), 404
+
+    return jsonify({"success": True, **ctx}), 200
 
 
 # --------------------------------------------------------------------
