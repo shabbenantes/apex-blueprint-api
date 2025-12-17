@@ -4,7 +4,7 @@ import uuid
 import json
 import re
 import time
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional
 
 from openai import OpenAI
 import boto3
@@ -263,13 +263,31 @@ def generate_pdf(blueprint_text: str, pdf_path: str, name: str, business_name: s
 
 
 # --------------------------------------------------------------------
-# CONTEXT LOOKUP FOR BLAND (or anything)
+# CONTEXT LOOKUP (BLAND / DEBUG)
 # --------------------------------------------------------------------
-@app.route("/context/<phone>", methods=["GET"])
-def context_lookup(phone: str):
+@app.route("/context", methods=["GET"])
+def context_lookup_query():
     """
-    Fetch the saved context for a phone number.
+    Fetch the saved context using a query param (BEST for Bland).
+    Example: /context?phone=+14155551212
+    """
+    phone = clean_value(request.args.get("phone"))
+    if not phone:
+        return jsonify({"success": False, "error": "missing phone query parameter", "phone": phone}), 400
+
+    ctx = get_context_for_phone(phone)
+    if not ctx:
+        return jsonify({"success": False, "error": "no context found for that phone", "phone": phone}), 404
+
+    return jsonify({"success": True, "phone": phone, "context": ctx})
+
+
+@app.route("/context/<phone>", methods=["GET"])
+def context_lookup_path(phone: str):
+    """
+    Fetch the saved context for a phone number via path.
     Example: /context/+14155551212  or /context/14155551212
+    Useful for manual browser testing.
     """
     ctx = get_context_for_phone(phone)
     if not ctx:
@@ -521,19 +539,22 @@ Data:
         pdf_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
         print("Generated PDF URL:", pdf_url, flush=True)
 
-        # Store context for Bland (keyed by LEAD phone)
-        store_context_for_phone(
-            phone_raw,
-            {
-                "lead_name": name,
-                "lead_email": email,
-                "lead_phone_e164": phone_e164,
-                "business_name": business_name,
-                "business_type": business_type,
-                "summary": summary_section,
-                "pdf_url": pdf_url,
-            },
-        )
+        # Store context for Bland (key by best phone we have)
+        context_blob = {
+            "lead_name": name,
+            "lead_email": email,
+            "lead_phone_e164": phone_e164,
+            "business_name": business_name,
+            "business_type": business_type,
+            "summary": summary_section,
+            "pdf_url": pdf_url,
+        }
+
+        # Prefer storing by E.164 (best for Bland), fallback to raw
+        if phone_e164:
+            store_context_for_phone(phone_e164, context_blob)
+        elif phone_raw:
+            store_context_for_phone(phone_raw, context_blob)
 
         print("TOTAL /run seconds:", round(time.time() - t0, 2), flush=True)
 
@@ -545,6 +566,7 @@ Data:
                 "pdf_url": pdf_url,
                 "name": name,
                 "email": email,
+                "phone_e164": phone_e164,
                 "team_size": team_size,
                 "data_block": data_block,
             }
