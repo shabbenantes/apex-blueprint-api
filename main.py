@@ -21,7 +21,7 @@ from reportlab.platypus import (
     KeepTogether,
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.enums import TA_CENTER
 from reportlab.lib import colors
 from reportlab.lib.units import inch
 
@@ -134,12 +134,12 @@ def split_bullets(text: str) -> List[str]:
             p = p[1:].strip()
         if not p:
             continue
-        # Light comma split for long lines
         if "," in p and len(p) > 50:
             for c in [x.strip() for x in p.split(",") if x.strip()]:
                 out.append(c)
         else:
             out.append(p)
+
     seen = set()
     final = []
     for x in out:
@@ -149,6 +149,14 @@ def split_bullets(text: str) -> List[str]:
         seen.add(k)
         final.append(x)
     return final[:12]
+
+
+def cap_bullets(items: List[str], max_items: int, tail_note: str = "More details are included in the Appendix.") -> List[str]:
+    """Prevents ReportLab LayoutError by ensuring cards never become taller than a page."""
+    items = [clean_value(x) for x in items if clean_value(x)]
+    if len(items) <= max_items:
+        return items
+    return items[: max_items - 1] + [tail_note]
 
 
 # --------------------------------------------------------------------
@@ -257,31 +265,27 @@ def _styles():
 
 def _header_footer(canvas, doc):
     st = _styles()
-    NAVY = st["NAVY"]
-    MUTED = st["MUTED"]
     w, h = letter
 
     canvas.saveState()
 
-    # Header rule
     canvas.setStrokeColor(st["BORDER"])
     canvas.setLineWidth(1)
     canvas.line(54, h - 48, w - 54, h - 48)
 
     canvas.setFont("Helvetica-Bold", 9)
-    canvas.setFillColor(NAVY)
+    canvas.setFillColor(st["NAVY"])
     canvas.drawString(54, h - 40, "Apex Automation — AI Automation Blueprint")
 
     canvas.setFont("Helvetica", 9)
-    canvas.setFillColor(MUTED)
+    canvas.setFillColor(st["MUTED"])
     canvas.drawRightString(w - 54, h - 40, time.strftime("%b %d, %Y"))
 
-    # Footer rule
     canvas.setStrokeColor(st["BORDER"])
     canvas.line(54, 48, w - 54, 48)
 
     canvas.setFont("Helvetica", 9)
-    canvas.setFillColor(MUTED)
+    canvas.setFillColor(st["MUTED"])
     canvas.drawString(54, 36, "Confidential — Prepared for the recipient on the cover page")
     canvas.drawRightString(w - 54, 36, f"Page {doc.page}")
 
@@ -289,7 +293,6 @@ def _header_footer(canvas, doc):
 
 
 def _card(title: str, bullets: List[str], st, width: float) -> Table:
-    """Card with title + bullets."""
     elems: List[Any] = []
     if title:
         elems.append(Paragraph(safe_p(title), st["h2"]))
@@ -318,7 +321,6 @@ def _card(title: str, bullets: List[str], st, width: float) -> Table:
 
 
 def _pill_row(items: List[str], st) -> Table:
-    """Up to 4 pills across."""
     pills: List[Any] = []
     for x in items[:4]:
         t = Table([[Paragraph(safe_p(x), st["pill"])]], colWidths=[1.6 * inch])
@@ -342,7 +344,6 @@ def _pill_row(items: List[str], st) -> Table:
 
 
 def _bar_chart(title: str, labels: List[str], values: List[int], st) -> Drawing:
-    """Safe bar chart (values sanitized)."""
     values = [int(v) for v in values if v is not None]
     if not values:
         values = [1]
@@ -362,8 +363,7 @@ def _bar_chart(title: str, labels: List[str], values: List[int], st) -> Drawing:
 
     vmax = max(values)
     bc.valueAxis.valueMax = max(int(vmax * 1.25), 10)
-    step = max(int(bc.valueAxis.valueMax / 5), 1)
-    bc.valueAxis.valueStep = step
+    bc.valueAxis.valueStep = max(int(bc.valueAxis.valueMax / 5), 1)
 
     bc.categoryAxis.categoryNames = labels
     bc.categoryAxis.labels.fontName = "Helvetica"
@@ -381,9 +381,6 @@ def _bar_chart(title: str, labels: List[str], values: List[int], st) -> Drawing:
 
 
 def _line_chart(title: str, labels: List[str], yvals: List[int], st) -> Drawing:
-    """
-    LinePlot uses numeric X values; we label manually underneath.
-    """
     if not yvals:
         yvals = [10, 20, 30]
 
@@ -422,10 +419,8 @@ def _line_chart(title: str, labels: List[str], yvals: List[int], st) -> Drawing:
 
     d.add(lp)
 
-    # Manual x labels (prettier)
-    # positions roughly align to the plot width
     if labels:
-        for i, lab in enumerate(labels[:len(yvals)]):
+        for i, lab in enumerate(labels[: len(yvals)]):
             x = 30 + (220 * (i / max(len(yvals) - 1, 1)))
             d.add(String(x - 8, 10, lab, fontName="Helvetica", fontSize=7, fillColor=st["MUTED"]))
 
@@ -450,10 +445,6 @@ def _parse_sections(blueprint_text: str) -> Dict[str, List[str]]:
 
 
 def _extract_fix_blocks(blueprint_text: str) -> List[Dict[str, List[str]]]:
-    """
-    Extract FIX 1/2/3 blocks in a simple way.
-    Returns list of dicts with title and bullets.
-    """
     lines = [ln.rstrip() for ln in blueprint_text.splitlines()]
     fixes: List[Dict[str, List[str]]] = []
     cur: Optional[Dict[str, List[str]]] = None
@@ -469,12 +460,10 @@ def _extract_fix_blocks(blueprint_text: str) -> List[Dict[str, List[str]]]:
             cur = {"title": s, "bullets": []}
             continue
         if cur:
-            # stop collecting when next SECTION starts
             if up.startswith("SECTION "):
                 fixes.append(cur)
                 cur = None
                 continue
-            # bullet-ish lines
             if s.startswith("-"):
                 cur["bullets"].append(s[1:].strip())
             elif s.startswith("•"):
@@ -531,14 +520,6 @@ def generate_pdf_v3(
     bottlenecks: str,
     manual_tasks: str,
 ):
-    """
-    PDF 3.0 — designed layout:
-    - Cover: info + pills + hero chart + top findings
-    - Executive summary: 2-column cards
-    - Top 3 Fixes: 3 cards
-    - 30-Day Roadmap: 2x2 week cards
-    - Appendix: full blueprint with strong hierarchy
-    """
     st = _styles()
 
     doc = SimpleDocTemplate(
@@ -558,22 +539,19 @@ def generate_pdf_v3(
     fixes = _extract_fix_blocks(blueprint_text)
     weeks = _extract_weeks(blueprint_text)
 
-    # Numbers for charts
     leads_n = parse_int(leads_per_week)
     jobs_n = parse_int(jobs_per_week)
     team_n = parse_int(team_size)
 
-    # ---------------------------
-    # PAGE 1 — COVER
-    # ---------------------------
+    left_w = 3.35 * inch
+    right_w = 3.35 * inch
+    gutter = 0.3 * inch
+
+    # ---------------- PAGE 1 — COVER ----------------
     story.append(Spacer(1, 16))
     story.append(Paragraph("Apex Automation", st["title"]))
     story.append(Paragraph("AI Automation Blueprint for Your Service Business", st["subtitle"]))
     story.append(Spacer(1, 8))
-
-    left_w = 3.35 * inch
-    right_w = 3.35 * inch
-    gutter = 0.3 * inch
 
     prepared = [
         f"<b>Prepared for:</b> {safe_p(lead_name) if lead_name else 'Business Owner'}",
@@ -609,42 +587,29 @@ def generate_pdf_v3(
 
     pill_tbl = _pill_row(pills, st)
 
-    # Hero chart (prefer workload snapshot if possible)
     hero = None
     if team_n is not None and jobs_n is not None:
         jpp = max(int(round(jobs_n / max(team_n, 1))), 0)
         hero = _bar_chart("Workload Snapshot", ["Team", "Jobs", "Jobs/person"], [team_n, jobs_n, jpp], st)
     elif leads_n is not None and jobs_n is not None:
         hero = _bar_chart("Leads vs Jobs (weekly)", ["Leads", "Jobs"], [leads_n, jobs_n], st)
-    elif clean_value(lead_response_time):
-        labels = ["Now", "5m", "15m", "1h", "4h", "24h"]
-        rt = clean_value(lead_response_time).lower()
-        curve = [85, 75, 60, 45, 30, 15]
-        if "immediate" in rt or "instan" in rt:
-            curve = [92, 80, 65, 50, 34, 18]
-        hero = _line_chart("Response Speed Impact (est.)", labels, curve, st)
-
-    if hero is None:
+    else:
         hero = _bar_chart("Submission Snapshot", ["Data"], [10], st)
 
-    right_block = KeepTogether([
-        hero,
-        Spacer(1, 8),
-        Paragraph("What this is:", st["h2"]),
-        Paragraph(
-            "A clear 30-day automation plan built from your answers — designed to help you save time, respond faster, and convert more leads.",
-            st["body"],
-        ),
-    ])
+    right_block = [hero, Spacer(1, 8),
+                   Paragraph("What this is:", st["h2"]),
+                   Paragraph(
+                       "A clear 30-day automation plan built from your answers — designed to help you save time, respond faster, and convert more leads.",
+                       st["body"],
+                   )]
 
-    left_block = KeepTogether([prepared_tbl, Spacer(1, 10), pill_tbl])
+    left_block = [prepared_tbl, Spacer(1, 10), pill_tbl]
 
     top_grid = Table([[left_block, "", right_block]], colWidths=[left_w, gutter, right_w])
     top_grid.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
     story.append(top_grid)
     story.append(Spacer(1, 10))
 
-    # Top Findings (from SECTION 1)
     sec1_key = next((k for k in sections.keys() if k.upper().startswith("SECTION 1")), None)
     findings: List[str] = []
     if sec1_key:
@@ -657,20 +622,17 @@ def generate_pdf_v3(
             else:
                 if len(s) <= 140:
                     findings.append(s)
-    findings = [x for x in findings if x][:6]
-
+    findings = cap_bullets(findings, 6)
     story.append(_card("Top Findings (Quick Snapshot)", findings, st, width=7.0 * inch))
 
     story.append(PageBreak())
 
-    # ---------------------------
-    # PAGE 2 — EXEC SUMMARY (2 columns)
-    # ---------------------------
+    # ---------------- PAGE 2 — EXEC SUMMARY ----------------
     story.append(Paragraph("Executive Summary", st["h1"]))
 
     sec2_key = next((k for k in sections.keys() if k.upper().startswith("SECTION 2")), None)
 
-    sec1_bul = findings[:8]
+    sec1_bul = cap_bullets(findings, 6)
     sec2_bul: List[str] = []
     if sec2_key:
         for ln in sections.get(sec2_key, []):
@@ -682,7 +644,8 @@ def generate_pdf_v3(
             else:
                 if len(s) <= 140 and not s.lower().startswith("section"):
                     sec2_bul.append(s)
-    sec2_bul = [x for x in sec2_bul if x][:10]
+
+    sec2_bul = cap_bullets(sec2_bul, 7)
 
     left_card = _card("Quick Snapshot", sec1_bul, st, width=left_w)
     right_card = _card("What You Told Me (highlights)", sec2_bul, st, width=right_w)
@@ -692,7 +655,6 @@ def generate_pdf_v3(
     story.append(grid)
     story.append(Spacer(1, 10))
 
-    # Small embedded chart row (keeps page from feeling empty)
     mini_left = None
     mini_right = None
     if leads_n is not None and jobs_n is not None:
@@ -703,16 +665,12 @@ def generate_pdf_v3(
         mini_right = _bar_chart("Ops Load (counts)", ["Manual", "Bottlenecks"], [mcount, bcount], st)
 
     if mini_left or mini_right:
-        row = []
-        row.append(mini_left if mini_left else Spacer(1, 1))
-        row.append(Spacer(1, 1))
-        row.append(mini_right if mini_right else Spacer(1, 1))
+        row = [mini_left if mini_left else Spacer(1, 1), "", mini_right if mini_right else Spacer(1, 1)]
         story.append(Table([row], colWidths=[left_w, gutter, right_w]))
+
     story.append(PageBreak())
 
-    # ---------------------------
-    # PAGE 3 — TOP 3 FIXES (3 cards)
-    # ---------------------------
+    # ---------------- PAGE 3 — TOP 3 FIXES ----------------
     story.append(Paragraph("Your Top 3 Automation Fixes", st["h1"]))
     story.append(Paragraph("These are the fastest wins based on your submission.", st["small"]))
     story.append(Spacer(1, 6))
@@ -720,19 +678,17 @@ def generate_pdf_v3(
     fix_cards: List[Any] = []
     for fx in fixes:
         title = fx.get("title", "Fix")
-        bullets = fx.get("bullets", [])[:10]
+        bullets = cap_bullets(fx.get("bullets", []), 7)
         fix_cards.append(_card(title, bullets, st, width=2.25 * inch))
 
-    if len(fix_cards) < 3:
-        while len(fix_cards) < 3:
-            fix_cards.append(_card("Fix", ["Not enough details were generated for this fix section."], st, width=2.25 * inch))
+    while len(fix_cards) < 3:
+        fix_cards.append(_card("Fix", ["Not enough details were generated for this fix section."], st, width=2.25 * inch))
 
     fixes_tbl = Table([fix_cards], colWidths=[2.25 * inch, 2.25 * inch, 2.25 * inch])
     fixes_tbl.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
     story.append(fixes_tbl)
     story.append(Spacer(1, 10))
 
-    # Supporting chart (response curve)
     rt = clean_value(lead_response_time).lower()
     if rt:
         labels = ["Now", "5m", "15m", "1h", "4h", "24h"]
@@ -743,21 +699,17 @@ def generate_pdf_v3(
             curve = [72, 66, 58, 45, 30, 18]
         elif "day" in rt or "24" in rt:
             curve = [55, 50, 40, 30, 20, 10]
-
-        story.append(KeepTogether([_line_chart("Response Time vs Likely Conversion (est.)", labels, curve, st)]))
+        story.append(_line_chart("Response Time vs Likely Conversion (est.)", labels, curve, st))
 
     story.append(PageBreak())
 
-    # ---------------------------
-    # PAGE 4 — 30-DAY ROADMAP (2x2)
-    # ---------------------------
+    # ---------------- PAGE 4 — 30-DAY ROADMAP ----------------
     story.append(Paragraph("Your 30-Day Action Plan", st["h1"]))
     story.append(Paragraph("Follow this week-by-week plan to stabilize operations and start scaling.", st["small"]))
     story.append(Spacer(1, 6))
 
-    # map week keys
     wk_keys = list(weeks.keys())
-    # Try to order Week 1..4
+
     def wk_num(k: str) -> int:
         m = re.search(r"WEEK\s+(\d+)", k.upper())
         return int(m.group(1)) if m else 999
@@ -766,7 +718,7 @@ def generate_pdf_v3(
 
     wk_cards = []
     for k in wk_keys[:4]:
-        wk_cards.append(_card(k, weeks.get(k, [])[:8], st, width=left_w))
+        wk_cards.append(_card(k, cap_bullets(weeks.get(k, []), 6), st, width=left_w))
 
     while len(wk_cards) < 4:
         wk_cards.append(_card("Week", ["Not enough data generated for this week section."], st, width=left_w))
@@ -781,9 +733,7 @@ def generate_pdf_v3(
 
     story.append(PageBreak())
 
-    # ---------------------------
-    # APPENDIX — FULL BLUEPRINT (clean hierarchy)
-    # ---------------------------
+    # ---------------- APPENDIX — FULL BLUEPRINT ----------------
     story.append(Paragraph("Appendix: Full Blueprint", st["h1"]))
     story.append(Paragraph("Below is the complete plan, preserved for reference.", st["small"]))
     story.append(Spacer(1, 8))
@@ -891,7 +841,6 @@ def run_blueprint():
         or form_fields.get("number_of_employees")
     )
 
-    # Fallbacks for prompt
     bn = business_name or "Not specified"
     bt = business_type or "Not specified"
     so = services_offered or "Not specified"
@@ -1005,21 +954,6 @@ Week 4 — Optimize and Prepare to Scale
 
 SECTION 6: Final Recommendations
 - 5–7 bullets.
-
-DATA (for internal use):
-Data:
-- business_name: {bn}
-- business_type: {bt}
-- team_size: {ts}
-- leads_per_week: {lpw}
-- jobs_per_week: {jpw}
-- average_lead_response_time: {lrt}
-- growth_goals: {gg}
-- biggest_bottlenecks: {bo}
-- manual_tasks: {mt}
-- current_software: {cs}
-- frustrations: {fr}
-- extra_notes: {en}
 """
 
     try:
@@ -1031,21 +965,13 @@ Data:
         full_text = response.output[0].content[0].text.strip()
         print("OpenAI seconds:", round(time.time() - t_ai, 2), "chars:", len(full_text), flush=True)
 
-        data_block = ""
-        split_marker = "\nDATA (for internal use):"
-        if split_marker in full_text:
-            main_text, data_part = full_text.split(split_marker, 1)
-            blueprint_text = main_text.strip()
-            data_block = "DATA (for internal use):" + data_part
-        else:
-            blueprint_text = full_text
+        blueprint_text = full_text
 
         summary_section = blueprint_text
         marker = "SECTION 3:"
         if marker in blueprint_text:
             summary_section = blueprint_text.split(marker, 1)[0].strip()
 
-        # Generate PDF (3.0)
         pdf_id = uuid.uuid4().hex
         pdf_filename = f"blueprint_{pdf_id}.pdf"
         pdf_path = os.path.join("/tmp", pdf_filename)
@@ -1109,7 +1035,6 @@ Data:
                 "email": email,
                 "phone_e164": phone_e164,
                 "team_size": team_size,
-                "data_block": data_block,
             }
         )
 
@@ -1118,9 +1043,6 @@ Data:
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-# --------------------------------------------------------------------
-# Legacy /pdf route (not used now)
-# --------------------------------------------------------------------
 @app.route("/pdf/<pdf_id>", methods=["GET"])
 def serve_pdf(pdf_id):
     return "PDFs are now stored on S3.", 410
@@ -1133,5 +1055,3 @@ def healthcheck():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
-
-
