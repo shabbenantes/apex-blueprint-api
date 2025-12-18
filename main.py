@@ -380,7 +380,8 @@ def _simple_bar_chart(title: str, labels: List[str], values: List[int], styles_m
     return d
 
 
-def _simple_line_chart(title: str, labels: List[str], points: List[Tuple[int, int]], styles_map) -> Drawing:
+# ✅ FIXED: HorizontalLineChart expects Y-values, not (x,y) tuples
+def _simple_line_chart(title: str, labels: List[str], values: List[int], styles_map) -> Drawing:
     st = styles_map
     NAVY = st["NAVY"]
     MUTED = st["MUTED"]
@@ -394,7 +395,9 @@ def _simple_line_chart(title: str, labels: List[str], points: List[Tuple[int, in
     lc.y = 25
     lc.height = 120
     lc.width = 400
-    lc.data = [points]
+
+    # IMPORTANT: list of y-values (ints)
+    lc.data = [values]
 
     lc.joinedLines = 1
     lc.lines[0].strokeColor = BLUE
@@ -452,15 +455,11 @@ def _build_charts_page(
         story.append(KeepTogether([d, Spacer(1, 10)]))
 
     # Chart 2: Response time vs likely conversion (heuristic)
-    # If response time is not numeric, we still render a generic curve.
-    # We map response-time buckets to a rough "conversion likelihood" score (0-100) for visual clarity.
     rt = clean_value(lead_response_time).lower()
     if rt:
         labels = ["Immediate", "5m", "15m", "1h", "4h", "24h"]
-        # baseline curve
         conv = [85, 75, 60, 45, 30, 15]
 
-        # nudge based on what they said
         if "immediate" in rt or "0" == rt or "instan" in rt:
             conv = [90, 78, 62, 48, 32, 16]
         elif "hour" in rt or "1h" in rt:
@@ -468,11 +467,11 @@ def _build_charts_page(
         elif "day" in rt or "24" in rt:
             conv = [55, 50, 40, 30, 20, 10]
 
-        points = [(i, conv[i]) for i in range(len(labels))]
+        # ✅ FIXED: pass conv list directly (no tuples)
         d = _simple_line_chart(
             "Response Time vs Likely Conversion (estimated)",
             labels,
-            points,
+            conv,
             styles_map,
         )
         story.append(KeepTogether([d, Spacer(1, 10)]))
@@ -637,7 +636,6 @@ def generate_pdf_v2(
     story.append(PageBreak())
 
     # -------- Executive Summary (cards) --------
-    # Section 1 card
     sec1_key = None
     for k in sections.keys():
         if k.upper().startswith("SECTION 1"):
@@ -645,7 +643,6 @@ def generate_pdf_v2(
             break
 
     if sec1_key:
-        # Pull only bullet-like lines for cleaner cards
         sec1_lines = sections.get(sec1_key, [])
         sec1_items = []
         for ln in sec1_lines:
@@ -654,14 +651,12 @@ def generate_pdf_v2(
             elif ln.startswith("•"):
                 sec1_items.append(ln[1:].strip())
             else:
-                # keep short lines
                 if len(ln) <= 140:
                     sec1_items.append(ln)
         sec1_items = [x for x in sec1_items if x][:8]
         if sec1_items:
             story.append(_section_card("Quick Snapshot", sec1_items, st))
 
-    # Section 2 card (top pieces)
     sec2_key = None
     for k in sections.keys():
         if k.upper().startswith("SECTION 2"):
@@ -669,7 +664,6 @@ def generate_pdf_v2(
             break
     if sec2_key:
         sec2_lines = sections.get(sec2_key, [])
-        # just take the best short bullets
         items = []
         for ln in sec2_lines:
             if ln.startswith("-"):
@@ -703,7 +697,6 @@ def generate_pdf_v2(
     story.append(Paragraph("Below is the complete plan, exactly as generated for this submission.", st["small"]))
     story.append(Spacer(1, 10))
 
-    # Render with clean headings
     for raw_line in blueprint_text.splitlines():
         line = raw_line.strip()
         if not line:
@@ -712,7 +705,6 @@ def generate_pdf_v2(
 
         upper = line.upper()
 
-        # Headings
         if upper.startswith("SECTION "):
             story.append(Spacer(1, 6))
             story.append(Paragraph(safe_p(line), st["h1"]))
@@ -729,7 +721,6 @@ def generate_pdf_v2(
             story.append(Paragraph(safe_p(line), st["h2"]))
             continue
 
-        # Bullets
         if line.startswith("- "):
             story.append(Paragraph("• " + safe_p(line[2:].strip()), st["body"]))
         elif line.startswith("• "):
@@ -737,7 +728,6 @@ def generate_pdf_v2(
         else:
             story.append(Paragraph(safe_p(line), st["body"]))
 
-    # Final CTA block (clean)
     story.append(Spacer(1, 16))
     cta = Table(
         [[
