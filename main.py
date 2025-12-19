@@ -134,24 +134,17 @@ def _strip_bullet_prefix(s: str) -> str:
 
 
 def _shorten_bullet(text: str, max_words: int = 9, max_chars: int = 68) -> str:
-    """
-    Hard-limit bullets so font can be large and pages look "designed".
-    """
     t = clean_value(text)
     if not t:
         return ""
-
     for sep in [". ", "; ", " — ", " - "]:
         if sep in t:
             t = t.split(sep, 1)[0].strip()
-
     words = t.split()
     if len(words) > max_words:
         t = " ".join(words[:max_words]).rstrip() + "…"
-
     if len(t) > max_chars:
         t = t[: max_chars - 1].rstrip() + "…"
-
     return t
 
 
@@ -167,25 +160,22 @@ def _shorten_list(items: List[str], max_items: int, max_words: int = 9, max_char
 
 
 # --------------------------------------------------------------------
-# PDF DESIGN SYSTEM (PHONE-FRIENDLY + NO SPLIT CARDS)
+# PDF DESIGN SYSTEM
 # --------------------------------------------------------------------
 def _brand_styles():
     styles = getSampleStyleSheet()
 
-    # Palette
     NAVY = colors.HexColor("#0B1B2B")
     BLUE = colors.HexColor("#2563EB")
     BLUE_DK = colors.HexColor("#1E40AF")
     MUTED = colors.HexColor("#64748B")
     WHITE = colors.white
 
-    # Cards
     CARD_BG = colors.HexColor("#FFFFFF")
     CARD_BG_ALT = colors.HexColor("#F3F7FF")
     BORDER = colors.HexColor("#D8E1EE")
     SOFT = colors.HexColor("#E6ECF5")
 
-    # Bigger typography
     title = ParagraphStyle(
         "ApexTitle",
         parent=styles["Title"],
@@ -215,8 +205,8 @@ def _brand_styles():
         fontSize=21,
         leading=25,
         textColor=NAVY,
-        spaceBefore=8,
-        spaceAfter=8,
+        spaceBefore=6,
+        spaceAfter=6,
     )
 
     h2 = ParagraphStyle(
@@ -230,7 +220,6 @@ def _brand_styles():
         spaceAfter=1,
     )
 
-    # MAIN BODY bigger (phone)
     body = ParagraphStyle(
         "ApexBody",
         parent=styles["BodyText"],
@@ -241,6 +230,14 @@ def _brand_styles():
         spaceAfter=2,
     )
 
+    body_week = ParagraphStyle(
+        "ApexBodyWeek",
+        parent=body,
+        fontSize=17,
+        leading=22,
+        spaceAfter=3,
+    )
+
     small = ParagraphStyle(
         "ApexSmall",
         parent=styles["BodyText"],
@@ -248,15 +245,6 @@ def _brand_styles():
         fontSize=12,
         leading=16,
         textColor=MUTED,
-        spaceAfter=3,
-    )
-
-    # Weeks even bigger to fill pages
-    body_week = ParagraphStyle(
-        "ApexBodyWeek",
-        parent=body,
-        fontSize=17,
-        leading=22,
         spaceAfter=3,
     )
 
@@ -275,11 +263,11 @@ def _brand_styles():
         "BLUE": BLUE,
         "BLUE_DK": BLUE_DK,
         "MUTED": MUTED,
+        "WHITE": WHITE,
         "CARD_BG": CARD_BG,
         "CARD_BG_ALT": CARD_BG_ALT,
         "BORDER": BORDER,
         "SOFT": SOFT,
-        "WHITE": WHITE,
         "title": title,
         "subtitle": subtitle,
         "h1": h1,
@@ -319,13 +307,9 @@ def _header_footer(canvas, doc):
     canvas.restoreState()
 
 
-def _estimate_card_height(num_lines: int, st, week: bool = False, extra_padding: int = 0) -> float:
-    line_h = float(st["body_week"].leading if week else st["body"].leading)
-    title_h = float(st["h2"].leading)
-    padding = (12 + extra_padding) + (12 + extra_padding) + 14
-    return title_h + (num_lines * line_h) + padding
-
-
+# --------------------------------------------------------------------
+# CARD BUILDING + PAGE PACKING (V9 핵심)
+# --------------------------------------------------------------------
 def _card_table(
     title: str,
     bullets: List[str],
@@ -339,15 +323,14 @@ def _card_table(
     body_style = st["body_week"] if week else st["body"]
 
     rows: List[List[Any]] = [[Paragraph(f"<b>{safe_p(title)}</b>", st["h2"])]]
-
     clean_bullets = [clean_value(b) for b in bullets if clean_value(b)]
+
     if not clean_bullets and placeholder_if_empty:
         rows.append([Paragraph("No details provided.", body_style)])
     else:
         for b in clean_bullets:
             rows.append([Paragraph("• " + safe_p(b), body_style)])
 
-    # Width matches margins (612 - 38 - 38 = 536) => 7.44in
     tbl = Table(rows, colWidths=[7.44 * inch], hAlign="LEFT")
     tbl.setStyle(
         TableStyle(
@@ -366,45 +349,6 @@ def _card_table(
     return tbl
 
 
-def _add_card_no_split(
-    story: List[Any],
-    title: str,
-    bullets: List[str],
-    st,
-    bg,
-    max_bullets: int = 7,
-    placeholder_if_empty: bool = True,
-    week: bool = False,
-    extra_padding: int = 0,
-    gap_after: int = 14,  # v9: bigger spacing between bubbles
-):
-    """
-    Ensures a card NEVER splits across pages by chunking into multiple cards.
-    """
-    bullets = [clean_value(x) for x in bullets if clean_value(x)]
-
-    if not bullets and placeholder_if_empty:
-        chunks = [[]]
-    else:
-        chunks = [bullets[i:i + max_bullets] for i in range(0, len(bullets), max_bullets)] or [[]]
-
-    for idx, chunk in enumerate(chunks):
-        t = title if idx == 0 else f"{title} (cont.)"
-        est_h = _estimate_card_height(max(1, len(chunk) + 1), st, week=week, extra_padding=extra_padding)
-        story.append(CondPageBreak(est_h + 18))
-
-        card = _card_table(
-            t,
-            chunk,
-            st,
-            bg=bg,
-            placeholder_if_empty=placeholder_if_empty,
-            week=week,
-            extra_padding=extra_padding,
-        )
-        story.append(KeepTogether([card, Spacer(1, gap_after)]))
-
-
 def _fix_header_bar(title: str, st) -> Table:
     tbl = Table([[Paragraph(safe_p(title), st["fix_header"])]], colWidths=[7.44 * inch])
     tbl.setStyle(
@@ -420,6 +364,67 @@ def _fix_header_bar(title: str, st) -> Table:
         )
     )
     return tbl
+
+
+def _flowable_h(flowable, avail_w: float) -> float:
+    # Ask the flowable how tall it wants to be.
+    _, h = flowable.wrap(avail_w, 10_000)
+    return float(h)
+
+
+def _page_frame_h(doc: SimpleDocTemplate) -> float:
+    # Approx usable height inside the frame.
+    page_h = letter[1]
+    return float(page_h - doc.topMargin - doc.bottomMargin)
+
+
+def _add_two_cards_page(
+    story: List[Any],
+    doc: SimpleDocTemplate,
+    st,
+    top_title: Optional[str],
+    card_a: Table,
+    card_b: Table,
+    *,
+    gap_min: int = 12,
+    gap_max: int = 44,
+    top_title_once: bool = True,
+    add_pagebreak: bool = True,
+):
+    """
+    Packs 2 bubbles per page and adds a *moderate* gap between them
+    to reduce bottom emptiness without "extreme spacing".
+    """
+    avail_w = doc.width
+    frame_h = _page_frame_h(doc)
+
+    used = 0.0
+    if top_title:
+        title_flow = Paragraph(safe_p(top_title), st["h1"])
+        used += _flowable_h(title_flow, avail_w)
+        used += 6  # spacer after title
+        story.append(title_flow)
+        story.append(Spacer(1, 6))
+
+    used += _flowable_h(card_a, avail_w)
+    used += 8  # normal spacer below first card
+
+    used += _flowable_h(card_b, avail_w)
+
+    leftover = max(0.0, frame_h - used)
+    # Put most of leftover between cards, but clamp so it never becomes crazy.
+    gap = max(gap_min, min(gap_max, int(leftover * 0.70)))
+
+    # Safety: if we somehow don't fit, force a pagebreak before we start
+    # (rare with short bullets, but safe)
+    story.append(CondPageBreak(frame_h - 24))
+
+    story.append(KeepTogether([card_a]))
+    story.append(Spacer(1, gap))
+    story.append(KeepTogether([card_b]))
+
+    if add_pagebreak:
+        story.append(PageBreak())
 
 
 # --------------------------------------------------------------------
@@ -470,7 +475,7 @@ def _line_chart(title: str, labels: List[str], y_values: List[int], st) -> Drawi
     lc.width = 380
     lc.height = 110
 
-    lc.data = [y_values]
+    lc.data = [y_values]  # y-values only
     lc.joinedLines = 1
     lc.lines[0].strokeColor = st["BLUE"]
     lc.lines[0].strokeWidth = 2
@@ -624,7 +629,7 @@ def _parse_week_blocks(section5_lines: List[str]) -> List[Tuple[str, List[str]]]
 
 
 # --------------------------------------------------------------------
-# VALUE SECTIONS (V9)
+# VALUE SECTIONS
 # --------------------------------------------------------------------
 def _build_numbers_suggest(leads_n: Optional[int], jobs_n: Optional[int], rt: str) -> List[str]:
     out: List[str] = []
@@ -635,63 +640,59 @@ def _build_numbers_suggest(leads_n: Optional[int], jobs_n: Optional[int], rt: st
     if rt and rt.lower().startswith(("immediate", "instant")):
         out.append("Fast response helps you win more jobs.")
     out.append("Best ROI: follow-ups, payroll, scheduling, paperwork.")
-    return _shorten_list(out, max_items=5, max_words=9, max_chars=68)
+    return _shorten_list(out, max_items=5)
 
 
 def _build_replaces(sec2_lines: List[str]) -> List[str]:
     text = " ".join(sec2_lines).lower()
     out = []
-    if "follow" in text or "text" in text or "email" in text:
+    if any(k in text for k in ["follow", "text", "email"]):
         out.append("Manual texting, emailing, and chasing leads.")
-    if "paperwork" in text or "forms" in text:
+    if any(k in text for k in ["paperwork", "forms", "photos"]):
         out.append("Paper forms, photos, and scattered job notes.")
-    if "payroll" in text or "hours" in text:
+    if any(k in text for k in ["payroll", "hours", "time"]):
         out.append("Manual payroll checks and time tracking.")
-    if "schedule" in text or "staff" in text:
+    if any(k in text for k in ["schedule", "staff"]):
         out.append("Back-and-forth scheduling and staff updates.")
     if not out:
         out = [
             "Manual follow-ups that slip through cracks.",
             "Paperwork that delays jobs and payments.",
-            "Scheduling done by constant back-and-forth texts.",
-            "Payroll prep done manually every week.",
+            "Staff scheduling done by constant texting.",
         ]
-    return _shorten_list(out, max_items=5, max_words=9, max_chars=68)
+    return _shorten_list(out, max_items=5)
 
 
 def _build_day_to_day() -> List[str]:
     out = [
         "New lead triggers texts until booked or closed.",
         "You see pipeline, missed calls, and tasks daily.",
-        "Team gets schedules, reminders, and updates automatically.",
+        "Team gets schedules and reminders automatically.",
         "Payroll prep is ready with approvals and alerts.",
-        "You review a simple weekly performance snapshot.",
+        "Weekly snapshot shows leads, jobs, and bottlenecks.",
     ]
-    return _shorten_list(out, max_items=6, max_words=9, max_chars=68)
+    return _shorten_list(out, max_items=6)
 
 
 def _build_auto_vs_human() -> Tuple[List[str], List[str]]:
     automate = [
         "Lead follow-ups, reminders, and no-show nudges.",
         "Appointment confirmations and reschedule prompts.",
-        "Basic staff reminders and schedule notifications.",
+        "Staff schedule notifications and shift reminders.",
         "Payroll prep, time logs, and approval alerts.",
-        "Simple reporting: leads, jobs, and response time.",
+        "Simple reporting: leads, jobs, response time.",
     ]
     human = [
         "Pricing, quoting, and final customer decisions.",
-        "Complex objections and special customer situations.",
-        "Quality control, training, and team leadership.",
+        "Complex objections and special situations.",
+        "Quality control, training, and leadership.",
         "High-value upsells and relationship building.",
     ]
-    return (
-        _shorten_list(automate, max_items=6, max_words=9, max_chars=68),
-        _shorten_list(human, max_items=6, max_words=9, max_chars=68),
-    )
+    return (_shorten_list(automate, 6), _shorten_list(human, 6))
 
 
 # --------------------------------------------------------------------
-# PDF GENERATION (V9 LAYOUT)
+# PDF GENERATION (V9)
 # --------------------------------------------------------------------
 def generate_pdf_v9(
     blueprint_text: str,
@@ -719,7 +720,7 @@ def generate_pdf_v9(
 
     story: List[Any] = []
 
-    # ------------------- PAGE 1: COVER -------------------
+    # ------------------- COVER -------------------
     story.append(Spacer(1, 22))
     story.append(Paragraph(safe_p(business_name) if business_name else "Your Business", st["title"]))
     story.append(Paragraph(safe_p(business_type) if business_type else "Service Business", st["subtitle"]))
@@ -731,15 +732,15 @@ def generate_pdf_v9(
         f"Jobs/week: {safe_p(jobs_per_week) if jobs_per_week else 'Not specified'}",
         f"Response time: {safe_p(lead_response_time) if lead_response_time else 'Not specified'}",
     ]
-    story.append(_card_table("Snapshot", cover_lines, st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False, extra_padding=2))
-    story.append(Spacer(1, 8))
+    story.append(_card_table("Snapshot", cover_lines, st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False))
+    story.append(Spacer(1, 6))
     story.append(Paragraph("Where you’re leaking time + money, and the fastest wins to fix it.", st["body"]))
 
     leads_n = parse_int(leads_per_week)
     jobs_n = parse_int(jobs_per_week)
     team_n = parse_int(team_size)
 
-    story.append(Spacer(1, 8))
+    story.append(Spacer(1, 6))
     story.append(Paragraph("Workload Snapshot", st["h1"]))
     if leads_n is not None and jobs_n is not None:
         story.append(_bar_chart("Leads per Week vs Jobs per Week", ["Leads", "Jobs"], [leads_n, jobs_n], st, compact=True))
@@ -748,77 +749,55 @@ def generate_pdf_v9(
 
     story.append(PageBreak())
 
-    # Pull sections
+    # ------------------- EXEC SUMMARY (2 bubbles per page; NO “SECTION X:” in titles) -------------------
     sec1_lines = _extract_section_lines(blueprint_text, 1)
     sec2_lines = _extract_section_lines(blueprint_text, 2)
-    sec3_lines = _extract_section_lines(blueprint_text, 3)
-    sec4_lines = _extract_section_lines(blueprint_text, 4)
-    sec5_lines = _extract_section_lines(blueprint_text, 5)
-    sec6_lines = _extract_section_lines(blueprint_text, 6)
-
-    sec1_items = _shorten_list([_strip_bullet_prefix(x) for x in sec1_lines], max_items=10)
-
-    # Section 2 blocks (Goals/Challenges/Time Lost/Opps)
     sec2_blocks = _group_subsections(sec2_lines) if sec2_lines else []
-    sec2_map = {title.strip(): _shorten_list(items, max_items=9) for title, items in sec2_blocks}
 
-    goals = sec2_map.get("Your Goals", [])
-    challenges = sec2_map.get("Your Challenges", [])
-    time_lost = sec2_map.get("Where Time Is Being Lost", [])
-    opps = sec2_map.get("Opportunities You’re Not Using Yet", [])
+    quick_snapshot = _shorten_list([_strip_bullet_prefix(x) for x in sec1_lines], max_items=8)
+    goals = _shorten_list(sec2_blocks[0][1], max_items=6) if len(sec2_blocks) > 0 else []
+    challenges = _shorten_list(sec2_blocks[1][1], max_items=6) if len(sec2_blocks) > 1 else []
+    time_lost = _shorten_list(sec2_blocks[2][1], max_items=6) if len(sec2_blocks) > 2 else []
+    opps = _shorten_list(sec2_blocks[3][1], max_items=6) if len(sec2_blocks) > 3 else []
 
     numbers_suggest = _build_numbers_suggest(leads_n, jobs_n, lead_response_time)
+
+    # Page A: Quick Snapshot + Your Goals
+    card_a1 = _card_table("Quick Snapshot", quick_snapshot, st, bg=st["CARD_BG"], extra_padding=2)
+    card_a2 = _card_table("Your Goals", goals, st, bg=st["CARD_BG_ALT"], extra_padding=2)
+    _add_two_cards_page(story, doc, st, "Executive Summary", card_a1, card_a2, gap_min=14, gap_max=44)
+
+    # Page B: Your Challenges + What the numbers suggest
+    card_b1 = _card_table("Your Challenges", challenges, st, bg=st["CARD_BG"], extra_padding=2)
+    card_b2 = _card_table("What the numbers suggest", numbers_suggest, st, bg=st["CARD_BG_ALT"], extra_padding=2, placeholder_if_empty=False)
+    _add_two_cards_page(story, doc, st, None, card_b1, card_b2, gap_min=14, gap_max=44)
+
+    # Page C: Where time is being lost + Opportunities
+    card_c1 = _card_table("Where time is being lost", time_lost, st, bg=st["CARD_BG"], extra_padding=2)
+    card_c2 = _card_table("Opportunities you’re not using yet", opps, st, bg=st["CARD_BG_ALT"], extra_padding=2)
+    _add_two_cards_page(story, doc, st, None, card_c1, card_c2, gap_min=14, gap_max=44)
+
+    # ------------------- WORKING SYSTEM (2 bubbles per page; sentence becomes real section) -------------------
     replaces = _build_replaces(sec2_lines)
     day2day = _build_day_to_day()
     auto_list, human_list = _build_auto_vs_human()
 
-    # ------------------- PAGE 2: EXEC SUMMARY (3 cards max) -------------------
-    story.append(Paragraph("Executive Summary", st["h1"]))
-    _add_card_no_split(story, "Quick Snapshot", sec1_items, st, bg=st["CARD_BG"], max_bullets=7, extra_padding=6, gap_after=16)
+    ws1 = _card_table("What this replaces", replaces, st, bg=st["CARD_BG"], extra_padding=2, placeholder_if_empty=False)
+    ws2 = _card_table("What this looks like day-to-day", day2day, st, bg=st["CARD_BG_ALT"], extra_padding=2, placeholder_if_empty=False)
+    _add_two_cards_page(story, doc, st, "How this turns into a working system", ws1, ws2, gap_min=14, gap_max=44)
 
-    _add_card_no_split(story, "Your Goals", goals or ["(No details found)"], st, bg=st["CARD_BG_ALT"], max_bullets=7, extra_padding=6, gap_after=16)
-    _add_card_no_split(story, "What the numbers suggest", numbers_suggest, st, bg=st["CARD_BG"], max_bullets=7, placeholder_if_empty=False, extra_padding=6, gap_after=16)
+    ws3 = _card_table("What we automate", auto_list, st, bg=st["CARD_BG"], extra_padding=2, placeholder_if_empty=False)
+    ws4 = _card_table("What stays human", human_list, st, bg=st["CARD_BG_ALT"], extra_padding=2, placeholder_if_empty=False)
+    _add_two_cards_page(story, doc, st, None, ws3, ws4, gap_min=14, gap_max=44)
 
-    story.append(PageBreak())
-
-    # ------------------- PAGE 3: EXEC SUMMARY (2 cards) -------------------
-    story.append(Paragraph("Executive Summary (continued)", st["h1"]))
-    _add_card_no_split(story, "Your Challenges", challenges or ["(No details found)"], st, bg=st["CARD_BG"], max_bullets=7, extra_padding=8, gap_after=18)
-    _add_card_no_split(story, "Where time is being lost", time_lost or ["(No details found)"], st, bg=st["CARD_BG_ALT"], max_bullets=7, extra_padding=8, gap_after=18)
-
-    story.append(PageBreak())
-
-    # ------------------- PAGE 4: Opps + Working System header + Replaces (no orphan) -------------------
-    story.append(Paragraph("Executive Summary (continued)", st["h1"]))
-    _add_card_no_split(story, "Opportunities you’re not using yet", opps or ["(No details found)"], st, bg=st["CARD_BG"], max_bullets=7, extra_padding=6, gap_after=16)
-
-    # No orphan: keep header + first card together
-    header = Paragraph("How this turns into a working system", st["h1"])
-    first_card_est = _estimate_card_height(1 + min(len(replaces), 6), st, extra_padding=10)
-    header_est = 36
-    story.append(CondPageBreak(header_est + first_card_est + 40))
-
-    story.append(header)
-    _add_card_no_split(story, "What this replaces", replaces, st, bg=st["CARD_BG_ALT"], max_bullets=6, placeholder_if_empty=False, extra_padding=10, gap_after=18)
-
-    story.append(PageBreak())
-
-    # ------------------- PAGE 5: Working System (3 cards) -------------------
-    story.append(Paragraph("Working System", st["h1"]))
-    _add_card_no_split(story, "What this looks like day-to-day", day2day, st, bg=st["CARD_BG"], max_bullets=6, placeholder_if_empty=False, extra_padding=10, gap_after=18)
-    _add_card_no_split(story, "What we automate", auto_list, st, bg=st["CARD_BG_ALT"], max_bullets=6, placeholder_if_empty=False, extra_padding=10, gap_after=18)
-    _add_card_no_split(story, "What stays human", human_list, st, bg=st["CARD_BG"], max_bullets=6, placeholder_if_empty=False, extra_padding=10, gap_after=18)
-
-    story.append(PageBreak())
-
-    # ------------------- PAGE 6: METRICS & VISUALS (3 charts) -------------------
+    # ------------------- METRICS & VISUALS (3 charts on ONE page) -------------------
     story.append(Paragraph("Key Metrics & Visuals", st["h1"]))
     story.append(Paragraph("Generated from the numbers you submitted.", st["small"]))
-    story.append(Spacer(1, 10))
+    story.append(Spacer(1, 6))
 
     if leads_n is not None and jobs_n is not None:
         story.append(_bar_chart("Leads per Week vs Jobs per Week", ["Leads", "Jobs"], [leads_n, jobs_n], st))
-        story.append(Spacer(1, 10))
+        story.append(Spacer(1, 6))
 
     rt = clean_value(lead_response_time).lower()
     if rt:
@@ -831,17 +810,19 @@ def generate_pdf_v9(
         elif "day" in rt or "24" in rt:
             conv = [55, 50, 40, 30, 20, 10]
         story.append(_line_chart("Response Time vs Likely Conversion (estimated)", labels, conv, st))
-        story.append(Spacer(1, 10))
+        story.append(Spacer(1, 6))
 
     story.append(_hours_saved_chart(leads_n, jobs_n, team_n, st))
     story.append(PageBreak())
 
-    # ------------------- SECTION 3: FIXES (same logic, prevent orphan headers) -------------------
+    # ------------------- SECTION 3: FIXES (KEEP YOUR STRONG LOOK) -------------------
     story.append(Paragraph("SECTION 3: Your Top 3 Automation Fixes", st["h1"]))
+    sec3_lines = _extract_section_lines(blueprint_text, 3)
     fixes = _parse_fixes(sec3_lines)
 
     if not fixes:
-        _add_card_no_split(story, "Automation Fixes", ["(No fixes found in SECTION 3)"], st, bg=st["CARD_BG"], max_bullets=6)
+        story.append(_card_table("Automation Fixes", ["(No fixes found in SECTION 3)"], st, bg=st["CARD_BG"]))
+        story.append(PageBreak())
     else:
         alt = True
         for fx in fixes[:3]:
@@ -851,111 +832,66 @@ def generate_pdf_v9(
             does_list = _shorten_list(fx.get("does", []), 8)
             incl_list = _shorten_list(fx.get("included", []), 8)
 
+            # prevent orphan header: keep header + first card together
+            header = _fix_header_bar(fx["title"], st)
             first_chunk = fixes_list[:7] if fixes_list else []
-            est_combo = 80 + _estimate_card_height(max(2, len(first_chunk) + 1), st)
-            story.append(CondPageBreak(est_combo + 20))
+            first_card = _card_table("What This Fixes", first_chunk, st, bg=bg, placeholder_if_empty=True)
 
-            header_tbl = _fix_header_bar(fx["title"], st)
-            first_card = _card_table("What This Fixes", first_chunk, st, bg=bg, placeholder_if_empty=True, extra_padding=2)
-            story.append(KeepTogether([header_tbl, Spacer(1, 10), first_card, Spacer(1, 14)]))
+            story.append(CondPageBreak(220))
+            story.append(KeepTogether([header, Spacer(1, 8), first_card, Spacer(1, 8)]))
 
             remaining = fixes_list[7:]
             if remaining:
-                _add_card_no_split(story, "What This Fixes", remaining, st, bg=bg, max_bullets=7, extra_padding=2, gap_after=14)
+                story.append(_card_table("What This Fixes (cont.)", remaining, st, bg=bg))
+                story.append(Spacer(1, 8))
 
-            _add_card_no_split(story, "What This Does For You", does_list, st, bg=bg, max_bullets=7, extra_padding=2, gap_after=14)
-            _add_card_no_split(story, "What’s Included", incl_list, st, bg=bg, max_bullets=7, extra_padding=2, gap_after=16)
-
+            story.append(_card_table("What This Does For You", does_list, st, bg=bg))
+            story.append(Spacer(1, 8))
+            story.append(_card_table("What’s Included", incl_list, st, bg=bg))
+            story.append(PageBreak())
             alt = not alt
-
-    story.append(PageBreak())
 
     # ------------------- SECTION 4 -------------------
     story.append(Paragraph("SECTION 4: Automation Scorecard", st["h1"]))
+    sec4_lines = _extract_section_lines(blueprint_text, 4)
     sec4_items = _shorten_list([_strip_bullet_prefix(x) for x in sec4_lines], max_items=12)
-    _add_card_no_split(story, "Scorecard (0–100)", sec4_items, st, bg=st["CARD_BG_ALT"], max_bullets=7, extra_padding=4, gap_after=16)
-
+    story.append(_card_table("Scorecard (0–100)", sec4_items, st, bg=st["CARD_BG_ALT"]))
     story.append(PageBreak())
 
-    # ------------------- SECTION 5 (2 WEEKS PER PAGE) -------------------
+    # ------------------- SECTION 5 (2 weeks per page, as you liked) -------------------
     story.append(Paragraph("SECTION 5: 30-Day Action Plan", st["h1"]))
+    sec5_lines = _extract_section_lines(blueprint_text, 5)
     week_blocks = _parse_week_blocks(sec5_lines)
     week_blocks = week_blocks[:4] if week_blocks else []
 
     if not week_blocks:
-        _add_card_no_split(story, "30-Day Plan", ["(No week plan found in SECTION 5)"], st, bg=st["CARD_BG"], max_bullets=6)
-    else:
-        pair1 = week_blocks[:2]
-        pair2 = week_blocks[2:4]
-
-        alt = True
-        for title, items in pair1:
-            bg = st["CARD_BG_ALT"] if alt else st["CARD_BG"]
-            items = _shorten_list(items, 3, max_words=9, max_chars=65)
-            _add_card_no_split(
-                story,
-                title,
-                items,
-                st,
-                bg=bg,
-                max_bullets=3,
-                week=True,
-                extra_padding=10,
-                gap_after=18,
-            )
-            alt = not alt
-
+        story.append(_card_table("30-Day Plan", ["(No week plan found in SECTION 5)"], st, bg=st["CARD_BG"]))
         story.append(PageBreak())
+    else:
+        w1, w2 = week_blocks[0], week_blocks[1]
+        w3, w4 = week_blocks[2], week_blocks[3]
 
-        alt = True
-        for title, items in pair2:
-            bg = st["CARD_BG_ALT"] if alt else st["CARD_BG"]
-            items = _shorten_list(items, 3, max_words=9, max_chars=65)
-            _add_card_no_split(
-                story,
-                title,
-                items,
-                st,
-                bg=bg,
-                max_bullets=3,
-                week=True,
-                extra_padding=10,
-                gap_after=18,
-            )
-            alt = not alt
+        # Page: Week 1 + Week 2
+        wk1 = _shorten_list(w1[1], 3, max_words=9, max_chars=65)
+        wk2 = _shorten_list(w2[1], 3, max_words=9, max_chars=65)
+        c1 = _card_table(w1[0], wk1, st, bg=st["CARD_BG_ALT"], week=True, extra_padding=8)
+        c2 = _card_table(w2[0], wk2, st, bg=st["CARD_BG"], week=True, extra_padding=8)
+        _add_two_cards_page(story, doc, st, None, c1, c2, gap_min=18, gap_max=52)
 
-    story.append(PageBreak())
+        # Page: Week 3 + Week 4
+        wk3 = _shorten_list(w3[1], 3, max_words=9, max_chars=65)
+        wk4 = _shorten_list(w4[1], 3, max_words=9, max_chars=65)
+        c3 = _card_table(w3[0], wk3, st, bg=st["CARD_BG_ALT"], week=True, extra_padding=8)
+        c4 = _card_table(w4[0], wk4, st, bg=st["CARD_BG"], week=True, extra_padding=8)
+        _add_two_cards_page(story, doc, st, None, c3, c4, gap_min=18, gap_max=52)
 
     # ------------------- SECTION 6 -------------------
     story.append(Paragraph("SECTION 6: Final Recommendations", st["h1"]))
+    sec6_lines = _extract_section_lines(blueprint_text, 6)
     sec6_items = _shorten_list([_strip_bullet_prefix(x) for x in sec6_lines], max_items=12)
-    _add_card_no_split(story, "Recommendations", sec6_items, st, bg=st["CARD_BG_ALT"], max_bullets=7, extra_padding=4, gap_after=16)
+    story.append(_card_table("Recommendations", sec6_items, st, bg=st["CARD_BG_ALT"]))
 
     doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
-
-
-# --------------------------------------------------------------------
-# CONTEXT LOOKUP (DEBUG)
-# --------------------------------------------------------------------
-@app.route("/context", methods=["GET"])
-def context_lookup_query():
-    phone = clean_value(request.args.get("phone"))
-    if not phone:
-        return jsonify({"success": False, "error": "missing phone query parameter", "phone": phone}), 400
-
-    ctx = get_context_for_phone(phone)
-    if not ctx:
-        return jsonify({"success": False, "error": "no context found for that phone", "phone": phone}), 404
-
-    return jsonify({"success": True, "phone": phone, "context": ctx})
-
-
-@app.route("/context/<phone>", methods=["GET"])
-def context_lookup_path(phone: str):
-    ctx = get_context_for_phone(phone)
-    if not ctx:
-        return jsonify({"success": False, "error": "no context found for that phone", "phone": phone}), 404
-    return jsonify({"success": True, "phone": phone, "context": ctx})
 
 
 # --------------------------------------------------------------------
@@ -1135,7 +1071,6 @@ SECTION 6: Final Recommendations
         if marker in blueprint_text:
             summary_section = blueprint_text.split(marker, 1)[0].strip()
 
-        # Generate PDF (V9)
         pdf_id = uuid.uuid4().hex
         pdf_filename = f"blueprint_{pdf_id}.pdf"
         pdf_path = os.path.join("/tmp", pdf_filename)
