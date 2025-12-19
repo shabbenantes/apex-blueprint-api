@@ -4,7 +4,7 @@ import uuid
 import json
 import re
 import time
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List
 
 from openai import OpenAI
 import boto3
@@ -26,6 +26,8 @@ from reportlab.lib.units import inch
 
 from reportlab.graphics.shapes import Drawing, String
 from reportlab.graphics.charts.barcharts import VerticalBarChart
+from reportlab.graphics.charts.linecharts import HorizontalLineChart
+from reportlab.graphics.widgets.markers import makeMarker
 
 app = Flask(__name__)
 
@@ -38,13 +40,12 @@ S3_REGION = os.environ.get("S3_REGION", "us-east-2")
 s3_client = boto3.client("s3", region_name=S3_REGION)
 
 # ---------- Context store (in-memory) ----------
-# NOTE: resets if Render restarts/redeploys.
 CONTEXT_TTL_SECONDS = int(os.environ.get("CONTEXT_TTL_SECONDS", "86400"))  # 24h default
-_CONTEXT_BY_PHONE: Dict[str, Dict[str, Any]] = {}  # key: normalized digits, value: {context..., expires_at}
+_CONTEXT_BY_PHONE: Dict[str, Dict[str, Any]] = {}
 
 
 # --------------------------------------------------------------------
-# HELPERS (cleaning + context)
+# HELPERS
 # --------------------------------------------------------------------
 def clean_value(v: object) -> str:
     if v is None:
@@ -102,7 +103,6 @@ def parse_int(s: str) -> Optional[int]:
     s = clean_value(s)
     if not s:
         return None
-    # accept "90", "about 90", "90-100", "90 leads"
     m = re.search(r"(\d{1,7})", s.replace(",", ""))
     if not m:
         return None
@@ -123,29 +123,21 @@ def safe_p(s: str) -> str:
     )
 
 
-def clamp_text(s: str, max_len: int = 180) -> str:
-    t = clean_value(s)
-    if len(t) <= max_len:
-        return t
-    return t[: max_len - 1].rstrip() + "…"
-
-
-def split_bullets(text: str) -> List[str]:
+def split_bullets(text: str, max_items: int = 12) -> List[str]:
     t = clean_value(text)
     if not t:
         return []
-    # split on newlines / bullets / hyphens
     parts = re.split(r"[\n•]+", t)
-    out: List[str] = []
+    out = []
     for p in parts:
         p = p.strip()
         if not p:
             continue
+        # handle "- item"
         if p.startswith("-"):
             p = p[1:].strip()
-        if not p:
-            continue
-        out.append(p)
+        if p:
+            out.append(p)
     # light dedupe
     seen = set()
     final = []
@@ -155,125 +147,92 @@ def split_bullets(text: str) -> List[str]:
             continue
         seen.add(k)
         final.append(x)
-    return final
+    return final[:max_items]
 
 
 # --------------------------------------------------------------------
-# PDF ARCHITECTURE: Consultant Blueprint (Option A)
+# PDF V3 (STABLE + PROFESSIONAL)
 # --------------------------------------------------------------------
-def _styles():
-    base = getSampleStyleSheet()
+def _brand_styles():
+    styles = getSampleStyleSheet()
 
     NAVY = colors.HexColor("#0A1A2F")
-    BLUE = colors.HexColor("#2F6FED")
+    BLUE = colors.HexColor("#2563EB")
     SLATE = colors.HexColor("#334155")
     MUTED = colors.HexColor("#64748B")
-    BG = colors.HexColor("#F6F8FC")
-    BORDER = colors.HexColor("#E2E8F0")
-    SOFT_BLUE = colors.HexColor("#EEF2FF")
-    SOFT_BLUE_BORDER = colors.HexColor("#C7D2FE")
+    CARD_BG = colors.HexColor("#F1F5F9")
+    BORDER = colors.HexColor("#CBD5E1")
 
-    # Bigger, more readable typography (requested)
-    cover_title = ParagraphStyle(
-        "CoverTitle",
-        parent=base["Title"],
+    title = ParagraphStyle(
+        "ApexTitle",
+        parent=styles["Title"],
         fontName="Helvetica-Bold",
         fontSize=30,
         leading=34,
         alignment=TA_CENTER,
         textColor=NAVY,
-        spaceAfter=8,
+        spaceAfter=10,
     )
 
-    cover_subtitle = ParagraphStyle(
-        "CoverSubtitle",
-        parent=base["Heading2"],
+    subtitle = ParagraphStyle(
+        "ApexSubtitle",
+        parent=styles["Heading2"],
         fontName="Helvetica",
-        fontSize=13,
+        fontSize=14,
         leading=18,
         alignment=TA_CENTER,
         textColor=MUTED,
         spaceAfter=18,
     )
 
-    page_title = ParagraphStyle(
-        "PageTitle",
-        parent=base["Heading1"],
+    h1 = ParagraphStyle(
+        "ApexH1",
+        parent=styles["Heading2"],
         fontName="Helvetica-Bold",
-        fontSize=18,
-        leading=22,
+        fontSize=16,
+        leading=20,
         textColor=NAVY,
+        spaceBefore=14,
         spaceAfter=8,
     )
 
-    section_title = ParagraphStyle(
-        "SectionTitle",
-        parent=base["Heading2"],
+    h2 = ParagraphStyle(
+        "ApexH2",
+        parent=styles["Heading3"],
         fontName="Helvetica-Bold",
-        fontSize=14,
-        leading=18,
-        textColor=NAVY,
-        spaceBefore=6,
+        fontSize=13,
+        leading=16,
+        textColor=SLATE,
+        spaceBefore=10,
         spaceAfter=6,
     )
 
-    subhead = ParagraphStyle(
-        "Subhead",
-        parent=base["Heading3"],
-        fontName="Helvetica-Bold",
-        fontSize=12,
-        leading=16,
-        textColor=SLATE,
-        spaceBefore=6,
-        spaceAfter=4,
-    )
-
     body = ParagraphStyle(
-        "Body",
-        parent=base["BodyText"],
+        "ApexBody",
+        parent=styles["BodyText"],
         fontName="Helvetica",
-        fontSize=11,
+        fontSize=12,
         leading=16,
         textColor=colors.HexColor("#111827"),
         spaceAfter=6,
     )
 
     small = ParagraphStyle(
-        "Small",
-        parent=base["BodyText"],
+        "ApexSmall",
+        parent=styles["BodyText"],
         fontName="Helvetica",
-        fontSize=9.5,
-        leading=13,
+        fontSize=10,
+        leading=14,
         textColor=MUTED,
-        spaceAfter=4,
-    )
-
-    metric_label = ParagraphStyle(
-        "MetricLabel",
-        parent=base["BodyText"],
-        fontName="Helvetica",
-        fontSize=9.5,
-        leading=12,
-        textColor=MUTED,
-        spaceAfter=1,
-    )
-
-    metric_value = ParagraphStyle(
-        "MetricValue",
-        parent=base["BodyText"],
-        fontName="Helvetica-Bold",
-        fontSize=16,
-        leading=18,
-        textColor=NAVY,
-        spaceAfter=0,
+        spaceAfter=6,
     )
 
     pill = ParagraphStyle(
-        "Pill",
-        parent=base["BodyText"],
+        "ApexPill",
+        parent=styles["BodyText"],
         fontName="Helvetica-Bold",
-        fontSize=9,
-        leading=11,
+        fontSize=10,
+        leading=12,
         alignment=TA_CENTER,
         textColor=colors.white,
     )
@@ -283,289 +242,178 @@ def _styles():
         "BLUE": BLUE,
         "SLATE": SLATE,
         "MUTED": MUTED,
-        "BG": BG,
+        "CARD_BG": CARD_BG,
         "BORDER": BORDER,
-        "SOFT_BLUE": SOFT_BLUE,
-        "SOFT_BLUE_BORDER": SOFT_BLUE_BORDER,
-        "cover_title": cover_title,
-        "cover_subtitle": cover_subtitle,
-        "page_title": page_title,
-        "section_title": section_title,
-        "subhead": subhead,
+        "title": title,
+        "subtitle": subtitle,
+        "h1": h1,
+        "h2": h2,
         "body": body,
         "small": small,
-        "metric_label": metric_label,
-        "metric_value": metric_value,
         "pill": pill,
     }
 
 
 def _header_footer(canvas, doc):
-    st = _styles()
-    NAVY = st["NAVY"]
-    MUTED = st["MUTED"]
-    w, h = doc.pagesize  # SAFE: doc.pagesize is a tuple, we unpack it here
-
+    st = _brand_styles()
     canvas.saveState()
+    w, h = letter
 
-    # top rule
+    # Header line
     canvas.setStrokeColor(colors.HexColor("#E2E8F0"))
     canvas.setLineWidth(1)
     canvas.line(54, h - 46, w - 54, h - 46)
 
     canvas.setFont("Helvetica-Bold", 9)
-    canvas.setFillColor(NAVY)
+    canvas.setFillColor(st["NAVY"])
     canvas.drawString(54, h - 38, "Apex Automation — AI Automation Blueprint")
 
     canvas.setFont("Helvetica", 9)
-    canvas.setFillColor(MUTED)
+    canvas.setFillColor(st["MUTED"])
     canvas.drawRightString(w - 54, h - 38, time.strftime("%b %d, %Y"))
 
-    # footer rule
+    # Footer
     canvas.setStrokeColor(colors.HexColor("#E2E8F0"))
     canvas.line(54, 46, w - 54, 46)
-
     canvas.setFont("Helvetica", 9)
-    canvas.setFillColor(MUTED)
-    canvas.drawString(54, 34, "Confidential — prepared for the business owner listed on the cover")
+    canvas.setFillColor(st["MUTED"])
+    canvas.drawString(54, 34, "Confidential — Prepared for the business owner listed on the cover")
     canvas.drawRightString(w - 54, 34, f"Page {doc.page}")
 
     canvas.restoreState()
 
 
-def _metric_tile(label: str, value: str, st) -> Table:
-    """Small fixed-height tile that cannot explode the layout."""
-    value = clamp_text(value, 24)
-    label = clamp_text(label, 40)
+def _card_block(title: str, bullets: List[str], st) -> Table:
+    """
+    IMPORTANT: Bullet lines are separate rows so the table can split across pages.
+    This avoids LayoutError / 16777221-height explosions.
+    """
+    rows = [[Paragraph(f"<b>{safe_p(title)}</b>", st["h2"])]]
+    if not bullets:
+        rows.append([Paragraph("No details provided.", st["body"])])
+    else:
+        for b in bullets:
+            rows.append([Paragraph("• " + safe_p(b), st["body"])])
 
-    inner = [
-        Paragraph(safe_p(label), st["metric_label"]),
-        Paragraph(safe_p(value), st["metric_value"]),
-    ]
-    t = Table([[inner]], colWidths=[3.05 * inch])
-    t.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, -1), colors.white),
-                ("BOX", (0, 0), (-1, -1), 1, st["BORDER"]),
-                ("LEFTPADDING", (0, 0), (-1, -1), 12),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 12),
-                ("TOPPADDING", (0, 0), (-1, -1), 10),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-            ]
-        )
-    )
-    return t
-
-
-def _card(title: str, bullets: List[str], st, max_items: int = 8) -> Table:
-    """Card with safe max bullets + truncation to avoid LayoutError."""
-    items = []
-    for b in bullets[:max_items]:
-        items.append(Paragraph("• " + safe_p(clamp_text(b, 170)), st["body"]))
-
-    if not items:
-        items = [Paragraph("• Not specified.", st["body"])]
-
-    content = [Paragraph(safe_p(title), st["section_title"]), Spacer(1, 4)] + items
-    tbl = Table([[content]], colWidths=[7.0 * inch])
+    tbl = Table(rows, colWidths=[7.1 * inch], hAlign="LEFT")
     tbl.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, -1), st["BG"]),
+                ("BACKGROUND", (0, 0), (-1, -1), st["CARD_BG"]),
                 ("BOX", (0, 0), (-1, -1), 1, st["BORDER"]),
                 ("LEFTPADDING", (0, 0), (-1, -1), 14),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 14),
                 ("TOPPADDING", (0, 0), (-1, -1), 12),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ]
         )
     )
     return tbl
 
 
-def _bar_chart(title: str, labels: List[str], values: List[int], st, width=420, height=180) -> Drawing:
-    """Simple, stable bar chart (no line chart to avoid tuple-related surprises)."""
-    d = Drawing(width, height)
-    d.add(String(0, height - 14, title, fontName="Helvetica-Bold", fontSize=10, fillColor=st["NAVY"]))
-
-    # normalize
-    safe_vals = [int(v) if isinstance(v, (int, float)) else 0 for v in values]
-    vmax = max(safe_vals) if safe_vals else 0
-    vmax = max(int(vmax * 1.25), 10)
+def _bar_chart(title: str, labels: List[str], values: List[int], st) -> Drawing:
+    d = Drawing(460, 200)
+    d.add(String(0, 180, title, fontName="Helvetica-Bold", fontSize=12, fillColor=st["NAVY"]))
 
     bc = VerticalBarChart()
     bc.x = 40
-    bc.y = 22
-    bc.width = width - 55
-    bc.height = height - 55
-    bc.data = [safe_vals]
+    bc.y = 30
+    bc.width = 380
+    bc.height = 120
+    bc.data = [values]
+
     bc.strokeColor = colors.transparent
     bc.bars[0].fillColor = st["BLUE"]
 
-    bc.valueAxis.valueMin = 0
-    bc.valueAxis.valueMax = vmax
-    bc.valueAxis.valueStep = max(int(vmax / 5), 1)
-    bc.valueAxis.labels.fontName = "Helvetica"
-    bc.valueAxis.labels.fontSize = 8
-    bc.valueAxis.labels.fillColor = st["MUTED"]
-
     bc.categoryAxis.categoryNames = labels
     bc.categoryAxis.labels.fontName = "Helvetica"
-    bc.categoryAxis.labels.fontSize = 8
+    bc.categoryAxis.labels.fontSize = 9
     bc.categoryAxis.labels.fillColor = st["MUTED"]
+
+    vmax = max(values + [10])
+    bc.valueAxis.valueMin = 0
+    bc.valueAxis.valueMax = int(vmax * 1.25) if vmax > 0 else 10
+    bc.valueAxis.valueStep = max(1, int(bc.valueAxis.valueMax / 5))
+    bc.valueAxis.labels.fontName = "Helvetica"
+    bc.valueAxis.labels.fontSize = 9
+    bc.valueAxis.labels.fillColor = st["MUTED"]
 
     d.add(bc)
     return d
 
 
-def _extract_section_lines(blueprint_text: str, section_prefix: str) -> List[str]:
+def _line_chart(title: str, labels: List[str], y_values: List[int], st) -> Drawing:
     """
-    Extract lines for a section like 'SECTION 1' or 'SECTION 6'
-    until the next 'SECTION ' heading.
+    Uses HorizontalLineChart safely: we pass y-values only and use category names.
+    Avoids tuple/int math issues completely.
+    """
+    d = Drawing(460, 200)
+    d.add(String(0, 180, title, fontName="Helvetica-Bold", fontSize=12, fillColor=st["NAVY"]))
+
+    lc = HorizontalLineChart()
+    lc.x = 40
+    lc.y = 30
+    lc.width = 380
+    lc.height = 120
+
+    lc.data = [y_values]  # <-- just y-values, not tuples
+    lc.joinedLines = 1
+    lc.lines[0].strokeColor = st["BLUE"]
+    lc.lines[0].strokeWidth = 2
+    lc.lines[0].symbol = makeMarker("FilledCircle")
+    lc.lines[0].symbol.size = 4
+
+    lc.categoryAxis.categoryNames = labels
+    lc.categoryAxis.labels.fontName = "Helvetica"
+    lc.categoryAxis.labels.fontSize = 9
+    lc.categoryAxis.labels.fillColor = st["MUTED"]
+
+    lc.valueAxis.valueMin = 0
+    lc.valueAxis.valueMax = 100
+    lc.valueAxis.valueStep = 20
+    lc.valueAxis.labels.fontName = "Helvetica"
+    lc.valueAxis.labels.fontSize = 9
+    lc.valueAxis.labels.fillColor = st["MUTED"]
+
+    d.add(lc)
+    return d
+
+
+def _extract_section_block(blueprint_text: str, section_prefix: str) -> List[str]:
+    """
+    Grab lines from a section until the next SECTION appears.
+    Returns clean bullet-like items (best effort).
     """
     lines = blueprint_text.splitlines()
-    out: List[str] = []
-    in_sec = False
-    for ln in lines:
+    start = None
+    for i, ln in enumerate(lines):
+        if ln.strip().upper().startswith(section_prefix.upper()):
+            start = i + 1
+            break
+    if start is None:
+        return []
+
+    out = []
+    for ln in lines[start:]:
         s = ln.strip()
         if not s:
             continue
         if s.upper().startswith("SECTION "):
-            if in_sec:
-                # stop when next section begins
-                break
-            if s.upper().startswith(section_prefix.upper()):
-                in_sec = True
-                continue
-        if in_sec:
-            # skip obvious subheaders but keep bullets
-            out.append(s)
-    return out
-
-
-def _only_bullets(lines: List[str]) -> List[str]:
-    bullets: List[str] = []
-    for ln in lines:
-        s = ln.strip()
+            break
+        # strip common bullet marks
         if s.startswith("- "):
-            bullets.append(s[2:].strip())
-        elif s.startswith("• "):
-            bullets.append(s[2:].strip())
-        elif s.startswith("-"):
-            bullets.append(s[1:].strip())
-    # If none, keep short lines
-    if not bullets:
-        for ln in lines:
-            if len(ln) <= 160 and not ln.upper().startswith("YOUR ") and not ln.upper().startswith("DATA"):
-                bullets.append(ln.strip())
-    return [b for b in bullets if b]
+            s = s[2:].strip()
+        if s.startswith("• "):
+            s = s[2:].strip()
+        if s:
+            out.append(s)
+
+    # keep it digestible
+    return out[:14]
 
 
-def _derive_top_problems(bottlenecks: str, frustrations: str, manual_tasks: str) -> List[str]:
-    pool = split_bullets(bottlenecks) + split_bullets(frustrations) + split_bullets(manual_tasks)
-    # fallback if empty
-    if not pool:
-        return [
-            "Follow-up and customer communication are inconsistent.",
-            "Manual admin work is taking time away from revenue.",
-            "Scheduling and internal handoffs aren’t standardized.",
-        ]
-    # pick first 6, then choose top 3
-    trimmed = [clamp_text(x, 160) for x in pool[:10] if x]
-    # ensure 3
-    while len(trimmed) < 3:
-        trimmed.append("Operational workload is higher than it should be due to manual processes.")
-    return trimmed[:3]
-
-
-def _extract_fix_blocks(blueprint_text: str) -> List[Tuple[str, List[str]]]:
-    """
-    Extract FIX blocks. Returns list of (fix_title_line, bullet_lines) for up to 3 fixes.
-    """
-    lines = blueprint_text.splitlines()
-    fixes: List[Tuple[str, List[str]]] = []
-    current_title = ""
-    current_lines: List[str] = []
-    in_fix = False
-
-    def flush():
-        nonlocal current_title, current_lines, fixes
-        if current_title:
-            bullets = _only_bullets(current_lines)
-            fixes.append((current_title, bullets))
-        current_title = ""
-        current_lines = []
-
-    for ln in lines:
-        s = ln.strip()
-        if not s:
-            continue
-        up = s.upper()
-
-        if up.startswith("SECTION "):
-            if in_fix:
-                flush()
-                in_fix = False
-            continue
-
-        if up.startswith("FIX "):
-            if in_fix:
-                flush()
-            in_fix = True
-            current_title = s
-            current_lines = []
-            continue
-
-        if in_fix:
-            # stop if a new FIX begins handled above
-            current_lines.append(s)
-
-    if in_fix:
-        flush()
-
-    return fixes[:3]
-
-
-def _extract_weeks(blueprint_text: str) -> Dict[str, List[str]]:
-    """
-    Extract Week 1..4 bullets under SECTION 5 if present.
-    """
-    sec5 = _extract_section_lines(blueprint_text, "SECTION 5")
-    # crude parse inside section 5
-    weeks = {"Week 1": [], "Week 2": [], "Week 3": [], "Week 4": []}
-    current = ""
-    for ln in sec5:
-        s = ln.strip()
-        up = s.upper()
-        if up.startswith("WEEK 1"):
-            current = "Week 1"
-            continue
-        if up.startswith("WEEK 2"):
-            current = "Week 2"
-            continue
-        if up.startswith("WEEK 3"):
-            current = "Week 3"
-            continue
-        if up.startswith("WEEK 4"):
-            current = "Week 4"
-            continue
-        if current:
-            if s.startswith("- "):
-                weeks[current].append(s[2:].strip())
-            elif s.startswith("• "):
-                weeks[current].append(s[2:].strip())
-            elif s.startswith("-"):
-                weeks[current].append(s[1:].strip())
-    # cap
-    for k in weeks:
-        weeks[k] = [clamp_text(x, 140) for x in weeks[k][:4]]
-        if not weeks[k]:
-            weeks[k] = ["Not specified."]
-    return weeks
-
-
-def generate_pdf_consultant(
+def generate_pdf_v3(
     blueprint_text: str,
     pdf_path: str,
     lead_name: str,
@@ -575,25 +423,8 @@ def generate_pdf_consultant(
     leads_per_week: str,
     jobs_per_week: str,
     lead_response_time: str,
-    bottlenecks: str,
-    manual_tasks: str,
-    frustrations: str,
 ):
-    """
-    9-page Consultant Blueprint (Option A):
-      1) Cover
-      2) Executive Snapshot (tiles + ONE chart)
-      3) Quick Snapshot (card)
-      4) What You Told Me (card)
-      5) Top 3 Problems (3 mini-cards)
-      6) Opportunity Map (chart + takeaway)
-      7) Top 3 Fixes (3 cards)
-      8) 30-Day Action Plan (timeline table)
-      9) Final Recommendations + Next Step (card)
-    No appendix, no raw full dump.
-    Built to avoid LayoutError by capping bullets + truncating.
-    """
-    st = _styles()
+    st = _brand_styles()
 
     doc = SimpleDocTemplate(
         pdf_path,
@@ -602,274 +433,135 @@ def generate_pdf_consultant(
         author="Apex Automation",
         leftMargin=54,
         rightMargin=54,
-        topMargin=64,
-        bottomMargin=64,
+        topMargin=60,
+        bottomMargin=60,
     )
 
     story: List[Any] = []
 
-    # ---------------- PAGE 1: COVER (no header/footer) ----------------
-    story.append(Spacer(1, 90))
-    story.append(Paragraph(safe_p(business_name) if business_name else "AI Automation Blueprint", st["cover_title"]))
-    story.append(Paragraph(safe_p(business_type) if business_type else "Service Business", st["cover_subtitle"]))
+    # ------------------- COVER -------------------
+    story.append(Spacer(1, 70))
+    story.append(Paragraph(safe_p(business_name) if business_name else "Your Business", st["title"]))
+    story.append(Paragraph(safe_p(business_type) if business_type else "Service Business", st["subtitle"]))
+    story.append(Spacer(1, 14))
 
-    # Prepared block
     cover_lines = [
         f"<b>Prepared for:</b> {safe_p(lead_name) if lead_name else 'Business Owner'}",
-        f"<b>Business:</b> {safe_p(business_name) if business_name else 'Not specified'}",
-        f"<b>Business type:</b> {safe_p(business_type) if business_type else 'Not specified'}",
-        f"<b>Date:</b> {time.strftime('%b %d, %Y')}",
+        f"<b>Team size:</b> {safe_p(team_size) if team_size else 'Not specified'}",
+        f"<b>Leads/week:</b> {safe_p(leads_per_week) if leads_per_week else 'Not specified'}",
+        f"<b>Jobs/week:</b> {safe_p(jobs_per_week) if jobs_per_week else 'Not specified'}",
+        f"<b>Response time:</b> {safe_p(lead_response_time) if lead_response_time else 'Not specified'}",
     ]
-    cover_tbl = Table([[Paragraph("<br/>".join(cover_lines), st["body"])]], colWidths=[6.2 * inch])
+    cover_tbl = Table([[Paragraph("<br/>".join(cover_lines), st["body"])]], colWidths=[7.1 * inch])
     cover_tbl.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+                ("BACKGROUND", (0, 0), (-1, -1), st["CARD_BG"]),
                 ("BOX", (0, 0), (-1, -1), 1, st["BORDER"]),
-                ("LEFTPADDING", (0, 0), (-1, -1), 18),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 18),
-                ("TOPPADDING", (0, 0), (-1, -1), 16),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 16),
+                ("LEFTPADDING", (0, 0), (-1, -1), 16),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 16),
+                ("TOPPADDING", (0, 0), (-1, -1), 14),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 14),
             ]
         )
     )
-    story.append(Spacer(1, 24))
     story.append(cover_tbl)
-    story.append(Spacer(1, 28))
-    story.append(Paragraph("Apex Automation", st["small"]))
+
+    story.append(Spacer(1, 18))
+    story.append(
+        Paragraph(
+            "This blueprint shows where your business is leaking time and money — and the fastest automation wins to fix it over the next 30 days.",
+            st["body"],
+        )
+    )
+
     story.append(PageBreak())
 
-    # Everything after cover uses header/footer
-    # ---------------- PAGE 2: EXECUTIVE SNAPSHOT ----------------
-    story.append(Paragraph("Executive Snapshot", st["page_title"]))
-    story.append(Paragraph("A fast, 30-second view of what matters most from your submission.", st["small"]))
+    # ------------------- EXEC SUMMARY (CARDS) -------------------
+    story.append(Paragraph("Executive Summary", st["h1"]))
+    sec1 = _extract_section_block(blueprint_text, "SECTION 1")
+    sec2 = _extract_section_block(blueprint_text, "SECTION 2")
+
+    story.append(_card_block("Quick Snapshot", sec1 if sec1 else ["(No snapshot section found)"], st))
+    story.append(Spacer(1, 12))
+    story.append(_card_block("What You Told Me (Highlights)", sec2 if sec2 else ["(No details found)"], st))
+    story.append(PageBreak())
+
+    # ------------------- METRICS & CHARTS -------------------
+    story.append(Paragraph("Key Metrics & Visuals", st["h1"]))
+    story.append(Paragraph("Visuals are created from the numbers you submitted. If something is missing, we skip it.", st["small"]))
     story.append(Spacer(1, 8))
 
     leads_n = parse_int(leads_per_week)
     jobs_n = parse_int(jobs_per_week)
-    team_n = parse_int(team_size)
 
-    # Metric tiles (left)
-    tiles = []
-    tiles.append(_metric_tile("Leads per week", leads_per_week or "Not specified", st))
-    tiles.append(_metric_tile("Jobs per week", jobs_per_week or "Not specified", st))
-    tiles.append(_metric_tile("Lead response time", lead_response_time or "Not specified", st))
-    tiles.append(_metric_tile("Team size", team_size or "Not specified", st))
-
-    tiles_tbl = Table([[tiles[0]], [tiles[1]], [tiles[2]], [tiles[3]]], colWidths=[3.2 * inch])
-    tiles_tbl.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
-
-    # One chart (right): Workload Snapshot
-    chart_cell: List[Any] = []
-    if team_n and jobs_n:
-        jpp = max(jobs_n / max(team_n, 1), 0)
-        chart = _bar_chart(
-            "Workload Snapshot",
-            ["Team", "Jobs/wk", "Jobs/person"],
-            [team_n, jobs_n, int(round(jpp))],
-            st,
-            width=300,
-            height=210,
-        )
-        chart_cell = [chart]
-    elif leads_n is not None and jobs_n is not None:
-        chart = _bar_chart(
-            "Leads vs Jobs (weekly)",
-            ["Leads", "Jobs"],
-            [leads_n, jobs_n],
-            st,
-            width=300,
-            height=210,
-        )
-        chart_cell = [chart]
+    # Chart 1: Leads vs Jobs
+    if leads_n is not None and jobs_n is not None:
+        story.append(_bar_chart("Leads per Week vs Jobs per Week", ["Leads", "Jobs"], [leads_n, jobs_n], st))
+        story.append(Spacer(1, 16))
     else:
-        chart_cell = [Paragraph("Not enough numeric data to generate the snapshot chart for this submission.", st["body"])]
+        story.append(Paragraph("Leads/jobs numbers were not provided clearly, so that chart was skipped.", st["small"]))
+        story.append(Spacer(1, 10))
 
-    # Two-column layout: left tiles, right chart
-    top_tbl = Table([[tiles_tbl, chart_cell]], colWidths=[3.3 * inch, 3.7 * inch])
-    top_tbl.setStyle(
-        TableStyle(
-            [
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-            ]
-        )
-    )
-    story.append(top_tbl)
-    story.append(Spacer(1, 10))
+    # Chart 2: Response time heuristic curve (safe)
+    rt = clean_value(lead_response_time).lower()
+    if rt:
+        labels = ["Immediate", "5m", "15m", "1h", "4h", "24h"]
+        # default curve
+        conv = [85, 75, 60, 45, 30, 15]
+        if "immediate" in rt or "instant" in rt:
+            conv = [90, 78, 62, 48, 32, 16]
+        elif "hour" in rt or "1h" in rt:
+            conv = [70, 65, 55, 45, 32, 18]
+        elif "day" in rt or "24" in rt:
+            conv = [55, 50, 40, 30, 20, 10]
 
-    # Short takeaway box
-    takeaway_text = (
-        "This snapshot helps us prioritize the fastest wins first. "
-        "Your full blueprint focuses on reducing manual workload, improving follow-up consistency, "
-        "and creating a clear 30-day execution path."
-    )
-    takeaway = Table([[Paragraph(safe_p(takeaway_text), st["body"])]], colWidths=[7.0 * inch])
-    takeaway.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, -1), st["SOFT_BLUE"]),
-                ("BOX", (0, 0), (-1, -1), 1, st["SOFT_BLUE_BORDER"]),
-                ("LEFTPADDING", (0, 0), (-1, -1), 14),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 14),
-                ("TOPPADDING", (0, 0), (-1, -1), 12),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
-            ]
-        )
-    )
-    story.append(takeaway)
-    story.append(PageBreak())
-
-    # ---------------- PAGE 3: QUICK SNAPSHOT CARD ----------------
-    sec1_lines = _extract_section_lines(blueprint_text, "SECTION 1")
-    sec1_bullets = _only_bullets(sec1_lines)
-    story.append(_card("Quick Snapshot", sec1_bullets, st, max_items=8))
-    story.append(PageBreak())
-
-    # ---------------- PAGE 4: WHAT YOU TOLD ME CARD ----------------
-    sec2_lines = _extract_section_lines(blueprint_text, "SECTION 2")
-    sec2_bullets = _only_bullets(sec2_lines)
-    story.append(_card("What You Told Me (Highlights)", sec2_bullets, st, max_items=10))
-    story.append(PageBreak())
-
-    # ---------------- PAGE 5: TOP 3 PROBLEMS ----------------
-    story.append(Paragraph("Top 3 Problems to Solve First", st["page_title"]))
-    story.append(Paragraph("These are the issues most likely to cost you time, money, and consistency.", st["small"]))
-    story.append(Spacer(1, 10))
-
-    probs = _derive_top_problems(bottlenecks=bottlenecks, frustrations=frustrations, manual_tasks=manual_tasks)
-    prob_cards = []
-    for i, p in enumerate(probs[:3], start=1):
-        tbl = _card(f"Problem {i}", [p], st, max_items=1)
-        prob_cards.append(tbl)
-
-    story.append(prob_cards[0])
-    story.append(prob_cards[1])
-    story.append(prob_cards[2])
-    story.append(PageBreak())
-
-    # ---------------- PAGE 6: OPPORTUNITY MAP ----------------
-    story.append(Paragraph("Automation Opportunity Map", st["page_title"]))
-    story.append(Paragraph("A clear view of where automation can remove friction in your operations.", st["small"]))
-    story.append(Spacer(1, 10))
-
-    manual_count = len(split_bullets(manual_tasks))
-    bottleneck_count = len(split_bullets(bottlenecks))
-    # If empty, still show 0/0 chart (keeps structure consistent)
-    chart = _bar_chart(
-        "Operations Load Indicators (from your answers)",
-        ["Manual tasks", "Bottlenecks"],
-        [manual_count, bottleneck_count],
-        st,
-        width=460,
-        height=220,
-    )
-    story.append(chart)
-    story.append(Spacer(1, 10))
-
-    opp_takeaway = (
-        "If we reduce manual tasks and bottlenecks even by 30–50%, you regain hours each week "
-        "and your business becomes easier to run — without hiring more admin help."
-    )
-    story.append(_card("Key Takeaway", [opp_takeaway], st, max_items=2))
-    story.append(PageBreak())
-
-    # ---------------- PAGE 7: TOP 3 FIXES ----------------
-    story.append(Paragraph("Your Top 3 Automation Fixes", st["page_title"]))
-    story.append(Paragraph("These fixes are designed for fast impact and simple implementation.", st["small"]))
-    story.append(Spacer(1, 10))
-
-    fixes = _extract_fix_blocks(blueprint_text)
-    if not fixes:
-        fixes = [
-            ("FIX 1 — Follow-up & Booking System", ["Automate follow-ups, reminders, and booking handoffs."]),
-            ("FIX 2 — Internal Operations Cleanup", ["Reduce paperwork and standardize daily workflows."]),
-            ("FIX 3 — Visibility & Reporting", ["Track leads, jobs, and performance without manual updates."]),
-        ]
-
-    for title, bullets in fixes[:3]:
-        # Make each fix card concise and readable
-        nice_title = title.replace("FIX", "Fix").replace("–", "-")
-        story.append(_card(nice_title, bullets, st, max_items=6))
+        story.append(_line_chart("Response Time vs Likely Conversion (estimated)", labels, conv, st))
+        story.append(Spacer(1, 12))
+    else:
+        story.append(Paragraph("Response time was not provided clearly, so that chart was skipped.", st["small"]))
+        story.append(Spacer(1, 10))
 
     story.append(PageBreak())
 
-    # ---------------- PAGE 8: 30-DAY ACTION PLAN (TIMELINE STYLE) ----------------
-    story.append(Paragraph("30-Day Action Plan", st["page_title"]))
-    story.append(Paragraph("A week-by-week plan to stabilize operations and start scaling.", st["small"]))
+    # ------------------- FULL BLUEPRINT (CLEAN) -------------------
+    story.append(Paragraph("Full Blueprint", st["h1"]))
+    story.append(Paragraph("Below is the complete plan, as generated for this submission.", st["small"]))
     story.append(Spacer(1, 10))
 
-    weeks = _extract_weeks(blueprint_text)
+    for raw in blueprint_text.splitlines():
+        line = raw.strip()
+        if not line:
+            story.append(Spacer(1, 4))
+            continue
 
-    def week_cell(week_name: str, bullets: List[str]) -> Table:
-        inner = [Paragraph(safe_p(week_name), st["subhead"]), Spacer(1, 2)]
-        for b in bullets[:4]:
-            inner.append(Paragraph("• " + safe_p(clamp_text(b, 120)), st["body"]))
-        t = Table([[inner]], colWidths=[1.65 * inch])
-        t.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, -1), st["BG"]),
-                    ("BOX", (0, 0), (-1, -1), 1, st["BORDER"]),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 10),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                    ("TOPPADDING", (0, 0), (-1, -1), 10),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ]
-            )
-        )
-        return t
+        upper = line.upper()
 
-    row = [
-        week_cell("Week 1", weeks["Week 1"]),
-        week_cell("Week 2", weeks["Week 2"]),
-        week_cell("Week 3", weeks["Week 3"]),
-        week_cell("Week 4", weeks["Week 4"]),
-    ]
-    plan_tbl = Table([row], colWidths=[1.75 * inch] * 4)
-    plan_tbl.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
-    story.append(plan_tbl)
-    story.append(PageBreak())
+        if upper.startswith("SECTION "):
+            story.append(Spacer(1, 10))
+            story.append(Paragraph(safe_p(line), st["h1"]))
+            continue
 
-    # ---------------- PAGE 9: FINAL RECOMMENDATIONS + NEXT STEP ----------------
-    story.append(Paragraph("Final Recommendations", st["page_title"]))
-    story.append(Paragraph("What to focus on first — and what to ignore for now.", st["small"]))
-    story.append(Spacer(1, 10))
+        if upper.startswith("FIX ") or upper.startswith("WEEK ") or (len(line) <= 60 and line.endswith(":")):
+            story.append(Spacer(1, 6))
+            story.append(Paragraph(safe_p(line), st["h2"]))
+            continue
 
-    sec6_lines = _extract_section_lines(blueprint_text, "SECTION 6")
-    recs = _only_bullets(sec6_lines)
-    if not recs:
-        recs = [
-            "Build the follow-up + booking flow first to capture more leads consistently.",
-            "Standardize internal handoffs so work doesn’t rely on memory or sticky notes.",
-            "Add simple reporting so you can see what’s working without manual tracking.",
-            "Avoid overbuilding — start with the smallest system that removes the biggest friction.",
-        ]
+        if line.startswith("- "):
+            story.append(Paragraph("• " + safe_p(line[2:].strip()), st["body"]))
+        elif line.startswith("• "):
+            story.append(Paragraph("• " + safe_p(line[2:].strip()), st["body"]))
+        else:
+            story.append(Paragraph(safe_p(line), st["body"]))
 
-    story.append(_card("Recommendations", recs, st, max_items=7))
-
-    next_step = (
-        "Next Step: On your strategy call, we’ll review your blueprint, pick the fastest wins, "
-        "and map your implementation plan. Come prepared with your current software logins and "
-        "a clear picture of your lead flow."
-    )
-    story.append(_card("Next Step", [next_step], st, max_items=3))
-
-    # BUILD
-    doc.build(story, onFirstPage=None, onLaterPages=_header_footer)
+    doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
 
 
 # --------------------------------------------------------------------
-# CONTEXT LOOKUP (BLAND / DEBUG)
+# CONTEXT LOOKUP (DEBUG)
 # --------------------------------------------------------------------
 @app.route("/context", methods=["GET"])
 def context_lookup_query():
-    """
-    Fetch the saved context using a query param.
-    Example: /context?phone=+14155551212
-    """
     phone = clean_value(request.args.get("phone"))
     if not phone:
         return jsonify({"success": False, "error": "missing phone query parameter", "phone": phone}), 400
@@ -883,10 +575,6 @@ def context_lookup_query():
 
 @app.route("/context/<phone>", methods=["GET"])
 def context_lookup_path(phone: str):
-    """
-    Fetch saved context via path.
-    Example: /context/+14155551212 or /context/14155551212
-    """
     ctx = get_context_for_phone(phone)
     if not ctx:
         return jsonify({"success": False, "error": "no context found for that phone", "phone": phone}), 404
@@ -901,8 +589,6 @@ def run_blueprint():
     t0 = time.time()
     data = request.get_json(force=True) or {}
 
-    print("Incoming payload keys:", list(data.keys()), flush=True)
-
     contact = data.get("contact", {}) or data.get("contact_data", {}) or {}
     form_fields = (
         data.get("form_fields")
@@ -911,7 +597,6 @@ def run_blueprint():
         or {}
     )
 
-    # Extract contact basics
     name = clean_value(
         contact.get("full_name")
         or contact.get("name")
@@ -924,7 +609,6 @@ def run_blueprint():
     phone_digits = normalize_phone(phone_raw)
     phone_e164 = to_e164(phone_digits)
 
-    # Extract form fields
     business_name = clean_value(form_fields.get("business_name") or form_fields.get("Business Name"))
     business_type = clean_value(form_fields.get("business_type") or form_fields.get("Business Type"))
     services_offered = clean_value(form_fields.get("services_offered") or form_fields.get("Services You Offer"))
@@ -948,7 +632,7 @@ def run_blueprint():
         or form_fields.get("number_of_employees")
     )
 
-    # Fallback labels for the prompt
+    # Prompt fallbacks
     bn = business_name or "Not specified"
     bt = business_type or "Not specified"
     so = services_offered or "Not specified"
@@ -964,7 +648,6 @@ def run_blueprint():
     en = extra_notes or "Not specified"
     ts = team_size or "Not specified"
 
-    # Keep source JSON small
     source_json = {
         "contact": {
             "name": name,
@@ -979,7 +662,7 @@ def run_blueprint():
 
     prompt = f"""
 You are APEX AI, a senior automation consultant who writes premium,
-clear, confidence-building business blueprints for service-business owners.
+clear, confidence-building business blueprints for home-service owners.
 
 STYLE RULES
 - Use simple business language (no tech jargon).
@@ -1058,56 +741,36 @@ Week 4 — Optimize and Prepare to Scale
 
 SECTION 6: Final Recommendations
 - 5–7 bullets.
-
-DATA (for internal use):
-Data:
-- business_name: {bn}
-- business_type: {bt}
-- team_size: {ts}
-- leads_per_week: {lpw}
-- jobs_per_week: {jpw}
-- average_lead_response_time: {lrt}
-- growth_goals: {gg}
-- biggest_bottlenecks: {bo}
-- manual_tasks: {mt}
-- current_software: {cs}
-- frustrations: {fr}
-- extra_notes: {en}
 """
 
     try:
         # OpenAI call
-        t_ai = time.time()
         response = client.responses.create(
             model="gpt-4.1-mini",
             input=prompt,
         )
-        full_text = response.output[0].content[0].text.strip()
-        print("OpenAI seconds:", round(time.time() - t_ai, 2), "chars:", len(full_text), flush=True)
 
-        # Split out DATA block
-        data_block = ""
-        split_marker = "\nDATA (for internal use):"
-        if split_marker in full_text:
-            main_text, data_part = full_text.split(split_marker, 1)
-            blueprint_text = main_text.strip()
-            data_block = "DATA (for internal use):" + data_part
-        else:
-            blueprint_text = full_text
+        # Robust extraction
+        full_text = ""
+        try:
+            full_text = response.output[0].content[0].text.strip()
+        except Exception:
+            # fallback: stringify response if structure differs
+            full_text = str(response)
 
         # Summary = up through Section 2
+        blueprint_text = full_text.strip()
         summary_section = blueprint_text
         marker = "SECTION 3:"
         if marker in blueprint_text:
             summary_section = blueprint_text.split(marker, 1)[0].strip()
 
-        # Generate PDF (Consultant Option A)
+        # Generate PDF (V3 stable)
         pdf_id = uuid.uuid4().hex
         pdf_filename = f"blueprint_{pdf_id}.pdf"
         pdf_path = os.path.join("/tmp", pdf_filename)
 
-        t_pdf = time.time()
-        generate_pdf_consultant(
+        generate_pdf_v3(
             blueprint_text=blueprint_text,
             pdf_path=pdf_path,
             lead_name=name,
@@ -1117,28 +780,21 @@ Data:
             leads_per_week=leads_per_week,
             jobs_per_week=jobs_per_week,
             lead_response_time=lead_response_time,
-            bottlenecks=bottlenecks,
-            manual_tasks=manual_tasks,
-            frustrations=frustrations,
         )
-        print("PDF seconds:", round(time.time() - t_pdf, 2), flush=True)
 
         # Upload PDF
         if not S3_BUCKET:
             raise RuntimeError("S3_BUCKET_NAME env var is not set in Render")
 
         s3_key = f"blueprints/{pdf_filename}"
-        t_s3 = time.time()
         s3_client.upload_file(
             Filename=pdf_path,
             Bucket=S3_BUCKET,
             Key=s3_key,
             ExtraArgs={"ContentType": "application/pdf", "ACL": "public-read"},
         )
-        print("S3 seconds:", round(time.time() - t_s3, 2), flush=True)
 
         pdf_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
-        print("Generated PDF URL:", pdf_url, flush=True)
 
         # Store context for lookup
         context_blob = {
@@ -1150,13 +806,10 @@ Data:
             "summary": summary_section,
             "pdf_url": pdf_url,
         }
-
         if phone_e164:
             store_context_for_phone(phone_e164, context_blob)
         elif phone_raw:
             store_context_for_phone(phone_raw, context_blob)
-
-        print("TOTAL /run seconds:", round(time.time() - t0, 2), flush=True)
 
         return jsonify(
             {
@@ -1168,21 +821,13 @@ Data:
                 "email": email,
                 "phone_e164": phone_e164,
                 "team_size": team_size,
-                "data_block": data_block,
+                "seconds": round(time.time() - t0, 2),
             }
         )
 
     except Exception as e:
         print("Error generating blueprint:", repr(e), flush=True)
         return jsonify({"success": False, "error": str(e)}), 500
-
-
-# --------------------------------------------------------------------
-# Legacy /pdf route (not used now)
-# --------------------------------------------------------------------
-@app.route("/pdf/<pdf_id>", methods=["GET"])
-def serve_pdf(pdf_id):
-    return "PDFs are now stored on S3.", 410
 
 
 @app.route("/", methods=["GET"])
@@ -1192,3 +837,4 @@ def healthcheck():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
