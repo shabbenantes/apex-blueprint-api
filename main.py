@@ -58,7 +58,6 @@ def clean_value(v: object) -> str:
     s = str(v).strip()
     if s.lower() in {"null", "none", "n/a", "na"}:
         return ""
-    # Filter common placeholder junk that shows up as bullets
     if s.strip() in {"--", "—", "-", "•", "• --"}:
         return ""
     return s
@@ -394,28 +393,41 @@ def _add_two_cards_page(
     gap_max: int = 44,
     add_pagebreak: bool = True,
 ):
+    """
+    Packs 2 cards per page WITHOUT orphaning the page title.
+    - Calculates the minimum space required BEFORE drawing anything.
+    - Keeps (title + cards) together on the same page.
+    """
     avail_w = doc.width
     frame_h = _page_frame_h(doc)
 
-    used = 0.0
-    if top_title:
-        title_flow = Paragraph(safe_p(top_title), st["h1"])
-        used += _flowable_h(title_flow, avail_w)
-        used += 6
-        story.append(title_flow)
-        story.append(Spacer(1, 6))
+    title_flow = Paragraph(safe_p(top_title), st["h1"]) if top_title else None
+    title_h = (_flowable_h(title_flow, avail_w) + 6) if title_flow else 0.0
 
-    used += _flowable_h(card_a, avail_w)
-    used += 8
-    used += _flowable_h(card_b, avail_w)
+    card_a_h = _flowable_h(card_a, avail_w)
+    card_b_h = _flowable_h(card_b, avail_w)
 
-    leftover = max(0.0, frame_h - used)
+    # Minimum required height for the whole layout (with minimum gap).
+    needed_min = title_h + card_a_h + 8 + gap_min + card_b_h
+
+    # If we're mid-page and can't fit, break BEFORE placing the title.
+    story.append(CondPageBreak(needed_min + 6))
+
+    # Now compute a "nice" gap that fills the page but never goes crazy.
+    used_no_gap = title_h + card_a_h + 8 + card_b_h
+    leftover = max(0.0, frame_h - used_no_gap)
     gap = max(gap_min, min(gap_max, int(leftover * 0.70)))
 
-    story.append(CondPageBreak(frame_h - 24))
-    story.append(KeepTogether([card_a]))
-    story.append(Spacer(1, gap))
-    story.append(KeepTogether([card_b]))
+    bundle: List[Any] = []
+    if title_flow:
+        bundle.append(title_flow)
+        bundle.append(Spacer(1, 6))
+    bundle.append(card_a)
+    bundle.append(Spacer(1, gap))
+    bundle.append(card_b)
+
+    # Keep the page header from splitting away from the first card.
+    story.append(KeepTogether(bundle))
 
     if add_pagebreak:
         story.append(PageBreak())
@@ -511,9 +523,6 @@ def _hours_saved_chart(leads_n: Optional[int], team_n: Optional[int], st) -> Dra
 
 
 def _score_gauge(score: int, st) -> Drawing:
-    """
-    Simple 0–100 gauge bar to sit under the scorecard.
-    """
     score = max(0, min(100, int(score)))
     w = 460
     h = 72
@@ -525,20 +534,15 @@ def _score_gauge(score: int, st) -> Drawing:
     d = Drawing(w, h)
 
     d.add(String(0, 54, "Score (0–100)", fontName="Helvetica-Bold", fontSize=12, fillColor=st["NAVY"]))
-
-    # Background bar
     d.add(Rect(pad_x, bar_y, bar_w, bar_h, strokeColor=st["BORDER"], fillColor=st["SOFT"], strokeWidth=1))
 
-    # Fill
     fill_w = int(bar_w * (score / 100.0))
     d.add(Rect(pad_x, bar_y, fill_w, bar_h, strokeColor=None, fillColor=st["BLUE"]))
 
-    # Ticks / labels
     d.add(String(pad_x, 10, "0", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
     d.add(String(pad_x + int(bar_w / 2) - 6, 10, "50", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
     d.add(String(pad_x + bar_w - 16, 10, "100", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
 
-    # Score label above fill end (clamped)
     label_x = pad_x + fill_w
     label_x = max(pad_x + 18, min(pad_x + bar_w - 18, label_x))
     d.add(String(label_x - 14, 44, f"{score}", fontName="Helvetica-Bold", fontSize=11, fillColor=st["NAVY"]))
@@ -722,10 +726,6 @@ def _build_auto_vs_human() -> Tuple[List[str], List[str]]:
 
 
 def _cta_card(st) -> Table:
-    """
-    Call-to-action card with clickable calendar link.
-    Requires CALENDAR_URL env var.
-    """
     url = CALENDAR_URL or "https://example.com/your-calendar-link"
 
     lines = [
@@ -757,9 +757,9 @@ def _cta_card(st) -> Table:
 
 
 # --------------------------------------------------------------------
-# PDF GENERATION (V10)
+# PDF GENERATION (V11)
 # --------------------------------------------------------------------
-def generate_pdf_v10(
+def generate_pdf_v11(
     blueprint_text: str,
     pdf_path: str,
     lead_name: str,
@@ -805,7 +805,6 @@ def generate_pdf_v10(
     jobs_n = parse_int(jobs_per_week)
     team_n = parse_int(team_size)
 
-    # Push the chart LOWER to fill the page better
     story.append(Spacer(1, 22))
     story.append(Paragraph("Workload Snapshot", st["h1"]))
     if leads_n is not None and jobs_n is not None:
@@ -815,13 +814,12 @@ def generate_pdf_v10(
 
     story.append(PageBreak())
 
-    # ------------------- EXEC SUMMARY (2 bubbles per page; page headers included) -------------------
+    # ------------------- EXEC SUMMARY -------------------
     sec1_lines = _extract_section_lines(blueprint_text, 1)
     sec2_lines = _extract_section_lines(blueprint_text, 2)
     sec2_blocks = _group_subsections(sec2_lines) if sec2_lines else []
 
     quick_snapshot = _shorten_list([_strip_bullet_prefix(x) for x in sec1_lines], max_items=8)
-
     goals = _shorten_list(sec2_blocks[0][1], max_items=6) if len(sec2_blocks) > 0 else []
     challenges = _shorten_list(sec2_blocks[1][1], max_items=6) if len(sec2_blocks) > 1 else []
     time_lost = _shorten_list(sec2_blocks[2][1], max_items=6) if len(sec2_blocks) > 2 else []
@@ -829,17 +827,14 @@ def generate_pdf_v10(
 
     numbers_suggest = _build_numbers_suggest(leads_n, jobs_n, lead_response_time)
 
-    # Page 2
     card_a1 = _card_table("Quick Snapshot", quick_snapshot, st, bg=st["CARD_BG"], extra_padding=2)
     card_a2 = _card_table("Your Goals", goals, st, bg=st["CARD_BG_ALT"], extra_padding=2)
     _add_two_cards_page(story, doc, st, "Executive Summary", card_a1, card_a2)
 
-    # Page 3
     card_b1 = _card_table("Your Challenges", challenges, st, bg=st["CARD_BG"], extra_padding=2)
     card_b2 = _card_table("What the numbers suggest", numbers_suggest, st, bg=st["CARD_BG_ALT"], extra_padding=2, placeholder_if_empty=False)
     _add_two_cards_page(story, doc, st, "Executive Summary (continued)", card_b1, card_b2)
 
-    # Page 4
     card_c1 = _card_table("Where time is being lost", time_lost, st, bg=st["CARD_BG"], extra_padding=2)
     card_c2 = _card_table("Opportunities you’re not using yet", opps, st, bg=st["CARD_BG_ALT"], extra_padding=2)
     _add_two_cards_page(story, doc, st, "Executive Summary (continued)", card_c1, card_c2)
@@ -903,7 +898,7 @@ def generate_pdf_v10(
             first_chunk = fixes_list[:7] if fixes_list else []
             first_card = _card_table("What This Fixes", first_chunk, st, bg=bg, placeholder_if_empty=True)
 
-            story.append(CondPageBreak(220))
+            story.append(CondPageBreak(240))
             story.append(KeepTogether([header, Spacer(1, 8), first_card, Spacer(1, 8)]))
 
             remaining = fixes_list[7:]
@@ -917,12 +912,11 @@ def generate_pdf_v10(
             story.append(PageBreak())
             alt = not alt
 
-    # ------------------- SECTION 4: SCORECARD + VISUAL GAUGE -------------------
+    # ------------------- SECTION 4: SCORECARD + GAUGE -------------------
     story.append(Paragraph("SECTION 4: Automation Scorecard", st["h1"]))
     sec4_lines = _extract_section_lines(blueprint_text, 4)
     sec4_items = _shorten_list([_strip_bullet_prefix(x) for x in sec4_lines], max_items=12)
 
-    # Parse score from bullets like "Score: 55"
     score_val = None
     for it in sec4_items:
         m = re.search(r"score\s*:\s*(\d{1,3})", it.lower())
@@ -941,13 +935,13 @@ def generate_pdf_v10(
 
     story.append(PageBreak())
 
-    # ------------------- SECTION 5 -------------------
-    story.append(Paragraph("SECTION 5: 30-Day Action Plan", st["h1"]))
+    # ------------------- SECTION 5: 30-Day Action Plan (NO ORPHAN HEADER) -------------------
     sec5_lines = _extract_section_lines(blueprint_text, 5)
     week_blocks = _parse_week_blocks(sec5_lines)
     week_blocks = week_blocks[:4] if week_blocks else []
 
     if not week_blocks or len(week_blocks) < 4:
+        story.append(Paragraph("SECTION 5: 30-Day Action Plan", st["h1"]))
         story.append(_card_table("30-Day Plan", ["(No week plan found in SECTION 5)"], st, bg=st["CARD_BG"]))
         story.append(PageBreak())
     else:
@@ -958,7 +952,7 @@ def generate_pdf_v10(
         wk2 = _shorten_list(w2[1], 3, max_words=9, max_chars=65)
         c1 = _card_table(w1[0], wk1, st, bg=st["CARD_BG_ALT"], week=True, extra_padding=8)
         c2 = _card_table(w2[0], wk2, st, bg=st["CARD_BG"], week=True, extra_padding=8)
-        _add_two_cards_page(story, doc, st, None, c1, c2, gap_min=18, gap_max=52)
+        _add_two_cards_page(story, doc, st, "SECTION 5: 30-Day Action Plan", c1, c2, gap_min=18, gap_max=52)
 
         wk3 = _shorten_list(w3[1], 3, max_words=9, max_chars=65)
         wk4 = _shorten_list(w4[1], 3, max_words=9, max_chars=65)
@@ -1159,7 +1153,7 @@ SECTION 6: Final Recommendations
         pdf_filename = f"blueprint_{pdf_id}.pdf"
         pdf_path = os.path.join("/tmp", pdf_filename)
 
-        generate_pdf_v10(
+        generate_pdf_v11(
             blueprint_text=blueprint_text,
             pdf_path=pdf_path,
             lead_name=name,
