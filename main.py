@@ -205,8 +205,8 @@ def _brand_styles():
         fontSize=21,
         leading=25,
         textColor=NAVY,
-        spaceBefore=6,
-        spaceAfter=6,
+        spaceBefore=4,
+        spaceAfter=8,
     )
 
     h2 = ParagraphStyle(
@@ -308,7 +308,7 @@ def _header_footer(canvas, doc):
 
 
 # --------------------------------------------------------------------
-# CARD BUILDING + PAGE PACKING (V9 핵심)
+# CARDS + PACKING (V9)
 # --------------------------------------------------------------------
 def _card_table(
     title: str,
@@ -366,69 +366,64 @@ def _fix_header_bar(title: str, st) -> Table:
     return tbl
 
 
-def _flowable_h(flowable, avail_w: float) -> float:
-    # Ask the flowable how tall it wants to be.
+def _flow_h(flowable, avail_w: float) -> float:
     _, h = flowable.wrap(avail_w, 10_000)
     return float(h)
 
 
-def _page_frame_h(doc: SimpleDocTemplate) -> float:
-    # Approx usable height inside the frame.
-    page_h = letter[1]
-    return float(page_h - doc.topMargin - doc.bottomMargin)
+def _frame_h(doc: SimpleDocTemplate) -> float:
+    return float(letter[1] - doc.topMargin - doc.bottomMargin)
 
 
-def _add_two_cards_page(
+def _two_cards_page(
     story: List[Any],
     doc: SimpleDocTemplate,
     st,
-    top_title: Optional[str],
-    card_a: Table,
-    card_b: Table,
+    page_title: Optional[str],
+    card1: Table,
+    card2: Table,
     *,
-    gap_min: int = 12,
+    continued_title: Optional[str] = None,
+    gap_min: int = 14,
     gap_max: int = 44,
-    top_title_once: bool = True,
     add_pagebreak: bool = True,
 ):
     """
-    Packs 2 bubbles per page and adds a *moderate* gap between them
-    to reduce bottom emptiness without "extreme spacing".
+    Guarantees: section header never appears alone.
+    Also adds a controlled gap between cards to reduce bottom empty space.
     """
     avail_w = doc.width
-    frame_h = _page_frame_h(doc)
+    frame_h = _frame_h(doc)
 
-    used = 0.0
-    if top_title:
-        title_flow = Paragraph(safe_p(top_title), st["h1"])
-        used += _flowable_h(title_flow, avail_w)
-        used += 6  # spacer after title
-        story.append(title_flow)
-        story.append(Spacer(1, 6))
+    title_flow = None
+    if page_title:
+        title_flow = Paragraph(safe_p(page_title), st["h1"])
 
-    used += _flowable_h(card_a, avail_w)
-    used += 8  # normal spacer below first card
+    # If we have a title, keep it with card1 at minimum.
+    if title_flow:
+        combo_h = _flow_h(title_flow, avail_w) + 6 + _flow_h(card1, avail_w)
+        story.append(CondPageBreak(combo_h + 24))
+        story.append(KeepTogether([title_flow, Spacer(1, 6), card1]))
+    else:
+        story.append(KeepTogether([card1]))
 
-    used += _flowable_h(card_b, avail_w)
-
+    # Calculate leftover and convert to gap (clamped, not extreme)
+    used = _flow_h(card1, avail_w)
+    if title_flow:
+        used += _flow_h(title_flow, avail_w) + 6
+    used += 8 + _flow_h(card2, avail_w)
     leftover = max(0.0, frame_h - used)
-    # Put most of leftover between cards, but clamp so it never becomes crazy.
     gap = max(gap_min, min(gap_max, int(leftover * 0.70)))
 
-    # Safety: if we somehow don't fit, force a pagebreak before we start
-    # (rare with short bullets, but safe)
-    story.append(CondPageBreak(frame_h - 24))
-
-    story.append(KeepTogether([card_a]))
     story.append(Spacer(1, gap))
-    story.append(KeepTogether([card_b]))
+    story.append(KeepTogether([card2]))
 
     if add_pagebreak:
         story.append(PageBreak())
 
 
 # --------------------------------------------------------------------
-# CHARTS (SAFE)
+# CHARTS
 # --------------------------------------------------------------------
 def _bar_chart(title: str, labels: List[str], values: List[int], st, compact: bool = False) -> Drawing:
     height = 155 if compact else 190
@@ -444,7 +439,6 @@ def _bar_chart(title: str, labels: List[str], values: List[int], st, compact: bo
     bc.width = 380
     bc.height = plot_h
     bc.data = [values]
-
     bc.strokeColor = colors.transparent
     bc.bars[0].fillColor = st["BLUE"]
 
@@ -475,7 +469,7 @@ def _line_chart(title: str, labels: List[str], y_values: List[int], st) -> Drawi
     lc.width = 380
     lc.height = 110
 
-    lc.data = [y_values]  # y-values only
+    lc.data = [y_values]
     lc.joinedLines = 1
     lc.lines[0].strokeColor = st["BLUE"]
     lc.lines[0].strokeWidth = 2
@@ -498,7 +492,7 @@ def _line_chart(title: str, labels: List[str], y_values: List[int], st) -> Drawi
     return d
 
 
-def _hours_saved_chart(leads_n: Optional[int], jobs_n: Optional[int], team_n: Optional[int], st) -> Drawing:
+def _hours_saved_chart(leads_n: Optional[int], team_n: Optional[int], st) -> Drawing:
     leads = leads_n or 0
     team = team_n or 0
 
@@ -629,7 +623,7 @@ def _parse_week_blocks(section5_lines: List[str]) -> List[Tuple[str, List[str]]]
 
 
 # --------------------------------------------------------------------
-# VALUE SECTIONS
+# VALUE SECTIONS (early pages)
 # --------------------------------------------------------------------
 def _build_numbers_suggest(leads_n: Optional[int], jobs_n: Optional[int], rt: str) -> List[str]:
     out: List[str] = []
@@ -648,24 +642,15 @@ def _build_replaces(sec2_lines: List[str]) -> List[str]:
     out = []
     if any(k in text for k in ["follow", "text", "email"]):
         out.append("Manual texting, emailing, and chasing leads.")
-    if any(k in text for k in ["paperwork", "forms", "photos"]):
-        out.append("Paper forms, photos, and scattered job notes.")
-    if any(k in text for k in ["payroll", "hours", "time"]):
-        out.append("Manual payroll checks and time tracking.")
-    if any(k in text for k in ["schedule", "staff"]):
-        out.append("Back-and-forth scheduling and staff updates.")
-    if not out:
-        out = [
-            "Manual follow-ups that slip through cracks.",
-            "Paperwork that delays jobs and payments.",
-            "Staff scheduling done by constant texting.",
-        ]
+    out.append("Paperwork, photos, and job notes stored everywhere.")
+    out.append("Payroll prep and hours tracked manually.")
+    out.append("Scheduling handled by constant back-and-forth.")
     return _shorten_list(out, max_items=5)
 
 
 def _build_day_to_day() -> List[str]:
     out = [
-        "New lead triggers texts until booked or closed.",
+        "New lead triggers follow-ups until booked or closed.",
         "You see pipeline, missed calls, and tasks daily.",
         "Team gets schedules and reminders automatically.",
         "Payroll prep is ready with approvals and alerts.",
@@ -689,6 +674,17 @@ def _build_auto_vs_human() -> Tuple[List[str], List[str]]:
         "High-value upsells and relationship building.",
     ]
     return (_shorten_list(automate, 6), _shorten_list(human, 6))
+
+
+def _build_first_14_days() -> List[str]:
+    out = [
+        "GoHighLevel pipeline cleaned and labeled clearly.",
+        "Missed call text-back + follow-up sequences live.",
+        "Booking confirmations and reminders turned on.",
+        "Team scheduling reminders and daily check-ins live.",
+        "Weekly owner dashboard: leads, jobs, response time.",
+    ]
+    return _shorten_list(out, max_items=6)
 
 
 # --------------------------------------------------------------------
@@ -749,48 +745,65 @@ def generate_pdf_v9(
 
     story.append(PageBreak())
 
-    # ------------------- EXEC SUMMARY (2 bubbles per page; NO “SECTION X:” in titles) -------------------
+    # ------------------- EXEC SUMMARY (V9: no orphan header; 2 cards/page) -------------------
     sec1_lines = _extract_section_lines(blueprint_text, 1)
     sec2_lines = _extract_section_lines(blueprint_text, 2)
     sec2_blocks = _group_subsections(sec2_lines) if sec2_lines else []
 
     quick_snapshot = _shorten_list([_strip_bullet_prefix(x) for x in sec1_lines], max_items=8)
-    goals = _shorten_list(sec2_blocks[0][1], max_items=6) if len(sec2_blocks) > 0 else []
-    challenges = _shorten_list(sec2_blocks[1][1], max_items=6) if len(sec2_blocks) > 1 else []
-    time_lost = _shorten_list(sec2_blocks[2][1], max_items=6) if len(sec2_blocks) > 2 else []
-    opps = _shorten_list(sec2_blocks[3][1], max_items=6) if len(sec2_blocks) > 3 else []
+
+    def get_block(i: int) -> List[str]:
+        if len(sec2_blocks) > i:
+            return _shorten_list(sec2_blocks[i][1], max_items=6)
+        return []
+
+    goals = get_block(0)
+    challenges = get_block(1)
+    time_lost = get_block(2)
+    opps = get_block(3)
 
     numbers_suggest = _build_numbers_suggest(leads_n, jobs_n, lead_response_time)
 
-    # Page A: Quick Snapshot + Your Goals
-    card_a1 = _card_table("Quick Snapshot", quick_snapshot, st, bg=st["CARD_BG"], extra_padding=2)
-    card_a2 = _card_table("Your Goals", goals, st, bg=st["CARD_BG_ALT"], extra_padding=2)
-    _add_two_cards_page(story, doc, st, "Executive Summary", card_a1, card_a2, gap_min=14, gap_max=44)
+    # Page 1: Quick Snapshot + Goals
+    c1 = _card_table("Quick Snapshot", quick_snapshot, st, bg=st["CARD_BG"], extra_padding=2)
+    c2 = _card_table("Your Goals", goals, st, bg=st["CARD_BG_ALT"], extra_padding=2)
+    _two_cards_page(story, doc, st, "Executive Summary", c1, c2)
 
-    # Page B: Your Challenges + What the numbers suggest
-    card_b1 = _card_table("Your Challenges", challenges, st, bg=st["CARD_BG"], extra_padding=2)
-    card_b2 = _card_table("What the numbers suggest", numbers_suggest, st, bg=st["CARD_BG_ALT"], extra_padding=2, placeholder_if_empty=False)
-    _add_two_cards_page(story, doc, st, None, card_b1, card_b2, gap_min=14, gap_max=44)
+    # Page 2: Challenges + Numbers
+    c3 = _card_table("Your Challenges", challenges, st, bg=st["CARD_BG"], extra_padding=2)
+    c4 = _card_table("What the numbers suggest", numbers_suggest, st, bg=st["CARD_BG_ALT"], extra_padding=2, placeholder_if_empty=False)
+    _two_cards_page(story, doc, st, "Executive Summary (continued)", c3, c4)
 
-    # Page C: Where time is being lost + Opportunities
-    card_c1 = _card_table("Where time is being lost", time_lost, st, bg=st["CARD_BG"], extra_padding=2)
-    card_c2 = _card_table("Opportunities you’re not using yet", opps, st, bg=st["CARD_BG_ALT"], extra_padding=2)
-    _add_two_cards_page(story, doc, st, None, card_c1, card_c2, gap_min=14, gap_max=44)
+    # Page 3: Time Lost + Opportunities
+    c5 = _card_table("Where time is being lost", time_lost, st, bg=st["CARD_BG"], extra_padding=2)
+    c6 = _card_table("Opportunities you’re not using yet", opps, st, bg=st["CARD_BG_ALT"], extra_padding=2)
+    _two_cards_page(story, doc, st, "Executive Summary (continued)", c5, c6)
 
-    # ------------------- WORKING SYSTEM (2 bubbles per page; sentence becomes real section) -------------------
+    # ------------------- WORKING SYSTEM (V9: no orphan header; 2 cards/page) -------------------
     replaces = _build_replaces(sec2_lines)
     day2day = _build_day_to_day()
     auto_list, human_list = _build_auto_vs_human()
+    first_14 = _build_first_14_days()
 
-    ws1 = _card_table("What this replaces", replaces, st, bg=st["CARD_BG"], extra_padding=2, placeholder_if_empty=False)
-    ws2 = _card_table("What this looks like day-to-day", day2day, st, bg=st["CARD_BG_ALT"], extra_padding=2, placeholder_if_empty=False)
-    _add_two_cards_page(story, doc, st, "How this turns into a working system", ws1, ws2, gap_min=14, gap_max=44)
+    w1 = _card_table("What this replaces", replaces, st, bg=st["CARD_BG"], extra_padding=2, placeholder_if_empty=False)
+    w2 = _card_table("What this looks like day-to-day", day2day, st, bg=st["CARD_BG_ALT"], extra_padding=2, placeholder_if_empty=False)
+    _two_cards_page(story, doc, st, "How this turns into a working system", w1, w2)
 
-    ws3 = _card_table("What we automate", auto_list, st, bg=st["CARD_BG"], extra_padding=2, placeholder_if_empty=False)
-    ws4 = _card_table("What stays human", human_list, st, bg=st["CARD_BG_ALT"], extra_padding=2, placeholder_if_empty=False)
-    _add_two_cards_page(story, doc, st, None, ws3, ws4, gap_min=14, gap_max=44)
+    w3 = _card_table("What we automate", auto_list, st, bg=st["CARD_BG"], extra_padding=2, placeholder_if_empty=False)
+    w4 = _card_table("What stays human", human_list, st, bg=st["CARD_BG_ALT"], extra_padding=2, placeholder_if_empty=False)
+    _two_cards_page(story, doc, st, "How this turns into a working system (continued)", w3, w4)
 
-    # ------------------- METRICS & VISUALS (3 charts on ONE page) -------------------
+    # Added value section (conversion/ROI): still “early pages”, still 2-up layout
+    v1 = _card_table("What you get in the first 14 days", first_14, st, bg=st["CARD_BG"], extra_padding=2, placeholder_if_empty=False)
+    v2 = _card_table("Built inside GoHighLevel", [
+        "Pipeline + stages mapped to your real workflow.",
+        "Automations run from your GoHighLevel account.",
+        "Reporting is simple and owner-friendly.",
+        "You keep control—no “black box” system.",
+    ], st, bg=st["CARD_BG_ALT"], extra_padding=2, placeholder_if_empty=False)
+    _two_cards_page(story, doc, st, None, v1, v2)
+
+    # ------------------- METRICS & VISUALS (keep solid) -------------------
     story.append(Paragraph("Key Metrics & Visuals", st["h1"]))
     story.append(Paragraph("Generated from the numbers you submitted.", st["small"]))
     story.append(Spacer(1, 6))
@@ -812,10 +825,10 @@ def generate_pdf_v9(
         story.append(_line_chart("Response Time vs Likely Conversion (estimated)", labels, conv, st))
         story.append(Spacer(1, 6))
 
-    story.append(_hours_saved_chart(leads_n, jobs_n, team_n, st))
+    story.append(_hours_saved_chart(leads_n, team_n, st))
     story.append(PageBreak())
 
-    # ------------------- SECTION 3: FIXES (KEEP YOUR STRONG LOOK) -------------------
+    # ------------------- SECTION 3: FIXES (keep your look) -------------------
     story.append(Paragraph("SECTION 3: Your Top 3 Automation Fixes", st["h1"]))
     sec3_lines = _extract_section_lines(blueprint_text, 3)
     fixes = _parse_fixes(sec3_lines)
@@ -832,12 +845,11 @@ def generate_pdf_v9(
             does_list = _shorten_list(fx.get("does", []), 8)
             incl_list = _shorten_list(fx.get("included", []), 8)
 
-            # prevent orphan header: keep header + first card together
             header = _fix_header_bar(fx["title"], st)
             first_chunk = fixes_list[:7] if fixes_list else []
             first_card = _card_table("What This Fixes", first_chunk, st, bg=bg, placeholder_if_empty=True)
 
-            story.append(CondPageBreak(220))
+            story.append(CondPageBreak(240))
             story.append(KeepTogether([header, Spacer(1, 8), first_card, Spacer(1, 8)]))
 
             remaining = fixes_list[7:]
@@ -858,7 +870,7 @@ def generate_pdf_v9(
     story.append(_card_table("Scorecard (0–100)", sec4_items, st, bg=st["CARD_BG_ALT"]))
     story.append(PageBreak())
 
-    # ------------------- SECTION 5 (2 weeks per page, as you liked) -------------------
+    # ------------------- SECTION 5 (2 weeks per page) -------------------
     story.append(Paragraph("SECTION 5: 30-Day Action Plan", st["h1"]))
     sec5_lines = _extract_section_lines(blueprint_text, 5)
     week_blocks = _parse_week_blocks(sec5_lines)
@@ -868,22 +880,18 @@ def generate_pdf_v9(
         story.append(_card_table("30-Day Plan", ["(No week plan found in SECTION 5)"], st, bg=st["CARD_BG"]))
         story.append(PageBreak())
     else:
-        w1, w2 = week_blocks[0], week_blocks[1]
-        w3, w4 = week_blocks[2], week_blocks[3]
+        w1t, w1i = week_blocks[0]
+        w2t, w2i = week_blocks[1]
+        w3t, w3i = week_blocks[2]
+        w4t, w4i = week_blocks[3]
 
-        # Page: Week 1 + Week 2
-        wk1 = _shorten_list(w1[1], 3, max_words=9, max_chars=65)
-        wk2 = _shorten_list(w2[1], 3, max_words=9, max_chars=65)
-        c1 = _card_table(w1[0], wk1, st, bg=st["CARD_BG_ALT"], week=True, extra_padding=8)
-        c2 = _card_table(w2[0], wk2, st, bg=st["CARD_BG"], week=True, extra_padding=8)
-        _add_two_cards_page(story, doc, st, None, c1, c2, gap_min=18, gap_max=52)
+        a = _card_table(w1t, _shorten_list(w1i, 3, max_words=9, max_chars=65), st, bg=st["CARD_BG_ALT"], week=True, extra_padding=8)
+        b = _card_table(w2t, _shorten_list(w2i, 3, max_words=9, max_chars=65), st, bg=st["CARD_BG"], week=True, extra_padding=8)
+        _two_cards_page(story, doc, st, None, a, b, gap_min=18, gap_max=52)
 
-        # Page: Week 3 + Week 4
-        wk3 = _shorten_list(w3[1], 3, max_words=9, max_chars=65)
-        wk4 = _shorten_list(w4[1], 3, max_words=9, max_chars=65)
-        c3 = _card_table(w3[0], wk3, st, bg=st["CARD_BG_ALT"], week=True, extra_padding=8)
-        c4 = _card_table(w4[0], wk4, st, bg=st["CARD_BG"], week=True, extra_padding=8)
-        _add_two_cards_page(story, doc, st, None, c3, c4, gap_min=18, gap_max=52)
+        c = _card_table(w3t, _shorten_list(w3i, 3, max_words=9, max_chars=65), st, bg=st["CARD_BG_ALT"], week=True, extra_padding=8)
+        d = _card_table(w4t, _shorten_list(w4i, 3, max_words=9, max_chars=65), st, bg=st["CARD_BG"], week=True, extra_padding=8)
+        _two_cards_page(story, doc, st, None, c, d, gap_min=18, gap_max=52)
 
     # ------------------- SECTION 6 -------------------
     story.append(Paragraph("SECTION 6: Final Recommendations", st["h1"]))
@@ -928,7 +936,13 @@ def run_blueprint():
     ideal_customer = clean_value(form_fields.get("ideal_customer") or form_fields.get("Ideal Customer"))
     bottlenecks = clean_value(form_fields.get("bottlenecks") or form_fields.get("Biggest Operational Bottlenecks"))
     manual_tasks = clean_value(form_fields.get("manual_tasks") or form_fields.get("Manual Tasks You Want Automated"))
-    current_software = clean_value(form_fields.get("current_software") or form_fields.get("Software You Currently Use"))
+
+    # You said you will always use GoHighLevel:
+    current_software_raw = clean_value(form_fields.get("current_software") or form_fields.get("Software You Currently Use"))
+    current_software = "GoHighLevel (primary CRM)"
+    if current_software_raw and "go high" not in current_software_raw.lower() and "ghl" not in current_software_raw.lower():
+        current_software = f"GoHighLevel (primary CRM); also uses {current_software_raw}"
+
     lead_response_time = clean_value(form_fields.get("lead_response_time") or form_fields.get("Average Lead Response Time"))
     leads_per_week = clean_value(form_fields.get("leads_per_week") or form_fields.get("Leads Per Week"))
     jobs_per_week = clean_value(form_fields.get("jobs_per_week") or form_fields.get("Jobs Per Week"))
@@ -937,7 +951,7 @@ def run_blueprint():
         or form_fields.get("growth_goals_6_12_months")
         or form_fields.get("Growth Goals (6–12 months)")
     )
-    frustrations = clean_value(form_fields.get("frustrations") or form_fields.get("What Frustrates You Most"))
+    frustrations = clean_value(form_fields.get("frustrations") or form_fields.get("frustrations") or form_fields.get("What Frustrates You Most"))
     extra_notes = clean_value(form_fields.get("extra_notes") or form_fields.get("Anything Else We Should Know"))
     team_size = clean_value(
         form_fields.get("team_size")
@@ -951,7 +965,7 @@ def run_blueprint():
     ic = ideal_customer or "Not specified"
     bo = bottlenecks or "Not specified"
     mt = manual_tasks or "Not specified"
-    cs = current_software or "Not specified"
+    cs = current_software or "GoHighLevel (primary CRM)"
     lrt = lead_response_time or "Not specified"
     lpw = leads_per_week or "Not specified"
     jpw = jobs_per_week or "Not specified"
@@ -969,6 +983,7 @@ def run_blueprint():
             "phone_e164": phone_e164,
         },
         "form_fields": form_fields,
+        "platform": {"primary_crm": "GoHighLevel"},
     }
     raw_json = json.dumps(source_json, indent=2, ensure_ascii=False)
 
@@ -983,6 +998,7 @@ STYLE RULES
 - 1 sentence per bullet. No long explanations.
 - Avoid filler words.
 - Keep it skimmable on a phone screen.
+- IMPORTANT: Build around GoHighLevel as the primary system.
 
 OWNER INFO
 - Owner name: {name}
