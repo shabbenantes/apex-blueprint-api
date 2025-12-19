@@ -42,7 +42,9 @@ S3_REGION = os.environ.get("S3_REGION", "us-east-2")
 s3_client = boto3.client("s3", region_name=S3_REGION)
 
 # ---------- CTA / CALENDAR ----------
-CALENDAR_URL = os.environ.get("CALENDAR_URL", "").strip()
+# Env var still supported, but if you don't set it, this link is used by default.
+DEFAULT_CALENDAR_URL = "https://api.leadconnectorhq.com/widget/bookings/automation-strategy-call-1"
+CALENDAR_URL = (os.environ.get("CALENDAR_URL", "") or "").strip() or DEFAULT_CALENDAR_URL
 
 # ---------- Context store (in-memory) ----------
 CONTEXT_TTL_SECONDS = int(os.environ.get("CONTEXT_TTL_SECONDS", "86400"))  # 24h default
@@ -91,19 +93,6 @@ def store_context_for_phone(phone: str, context: Dict[str, Any]) -> None:
     if not key:
         return
     _CONTEXT_BY_PHONE[key] = {**context, "expires_at": time.time() + CONTEXT_TTL_SECONDS}
-
-
-def get_context_for_phone(phone: str) -> Optional[Dict[str, Any]]:
-    cleanup_context_store()
-    key = normalize_phone(phone)
-    if not key:
-        return None
-    item = _CONTEXT_BY_PHONE.get(key)
-    if not item:
-        return None
-    out = dict(item)
-    out.pop("expires_at", None)
-    return out
 
 
 def parse_int(s: str) -> Optional[int]:
@@ -263,6 +252,16 @@ def _brand_styles():
         alignment=TA_LEFT,
     )
 
+    cta_btn = ParagraphStyle(
+        "CtaBtn",
+        parent=styles["BodyText"],
+        fontName="Helvetica-Bold",
+        fontSize=14,
+        leading=16,
+        alignment=TA_CENTER,
+        textColor=WHITE,
+    )
+
     return {
         "NAVY": NAVY,
         "BLUE": BLUE,
@@ -281,6 +280,7 @@ def _brand_styles():
         "body_week": body_week,
         "small": small,
         "fix_header": fix_header,
+        "cta_btn": cta_btn,
     }
 
 
@@ -395,8 +395,6 @@ def _add_two_cards_page(
 ):
     """
     Packs 2 cards per page WITHOUT orphaning the page title.
-    - Calculates the minimum space required BEFORE drawing anything.
-    - Keeps (title + cards) together on the same page.
     """
     avail_w = doc.width
     frame_h = _page_frame_h(doc)
@@ -407,13 +405,10 @@ def _add_two_cards_page(
     card_a_h = _flowable_h(card_a, avail_w)
     card_b_h = _flowable_h(card_b, avail_w)
 
-    # Minimum required height for the whole layout (with minimum gap).
     needed_min = title_h + card_a_h + 8 + gap_min + card_b_h
 
-    # If we're mid-page and can't fit, break BEFORE placing the title.
     story.append(CondPageBreak(needed_min + 6))
 
-    # Now compute a "nice" gap that fills the page but never goes crazy.
     used_no_gap = title_h + card_a_h + 8 + card_b_h
     leftover = max(0.0, frame_h - used_no_gap)
     gap = max(gap_min, min(gap_max, int(leftover * 0.70)))
@@ -426,7 +421,6 @@ def _add_two_cards_page(
     bundle.append(Spacer(1, gap))
     bundle.append(card_b)
 
-    # Keep the page header from splitting away from the first card.
     story.append(KeepTogether(bundle))
 
     if add_pagebreak:
@@ -546,6 +540,71 @@ def _score_gauge(score: int, st) -> Drawing:
     label_x = pad_x + fill_w
     label_x = max(pad_x + 18, min(pad_x + bar_w - 18, label_x))
     d.add(String(label_x - 14, 44, f"{score}", fontName="Helvetica-Bold", fontSize=11, fillColor=st["NAVY"]))
+
+    return d
+
+
+def _opportunity_by_area(score: int, scorecard_items: List[str], st) -> Drawing:
+    """
+    Fills the bottom of Section 4 with a second visual that adds real value.
+    Shows where automation ROI is likely highest (Customer / Ops / Team).
+    """
+    score = max(0, min(100, int(score)))
+    opportunity = max(10, 100 - score)  # lower score => higher opportunity
+
+    text_blob = " ".join([clean_value(x).lower() for x in scorecard_items if clean_value(x)])
+
+    # Base weights
+    w_customer, w_ops, w_team = 0.34, 0.33, 0.33
+
+    # Keyword nudges based on what they wrote in the scorecard
+    if any(k in text_blob for k in ["follow", "response", "lead", "customer", "text", "call"]):
+        w_customer += 0.15
+    if any(k in text_blob for k in ["payroll", "paperwork", "document", "forms", "invoice", "admin"]):
+        w_ops += 0.15
+    if any(k in text_blob for k in ["staff", "team", "employee", "training", "management"]):
+        w_team += 0.15
+
+    total = w_customer + w_ops + w_team
+    w_customer, w_ops, w_team = w_customer / total, w_ops / total, w_team / total
+
+    v_customer = int(round(opportunity * w_customer))
+    v_ops = int(round(opportunity * w_ops))
+    v_team = int(round(opportunity * w_team))
+
+    # Clamp for nice visuals
+    v_customer = max(5, min(95, v_customer))
+    v_ops = max(5, min(95, v_ops))
+    v_team = max(5, min(95, v_team))
+
+    w = 460
+    h = 120
+    pad_x = 10
+    bar_x = 170
+    bar_w = w - bar_x - 16
+    bar_h = 12
+
+    d = Drawing(w, h)
+    d.add(String(0, 102, "Automation Opportunity by Area", fontName="Helvetica-Bold", fontSize=12, fillColor=st["NAVY"]))
+    d.add(String(0, 86, "Higher bars = bigger payoff from cleanup + automation.", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
+
+    rows = [
+        ("Customer follow-ups", v_customer),
+        ("Operations & paperwork", v_ops),
+        ("Team & internal process", v_team),
+    ]
+
+    y = 62
+    for label, val in rows:
+        d.add(String(pad_x, y + 2, label, fontName="Helvetica", fontSize=10, fillColor=st["NAVY"]))
+        # background
+        d.add(Rect(bar_x, y, bar_w, bar_h, strokeColor=st["BORDER"], fillColor=st["SOFT"], strokeWidth=1))
+        # fill
+        fill_w = int(bar_w * (val / 100.0))
+        d.add(Rect(bar_x, y, fill_w, bar_h, strokeColor=None, fillColor=st["BLUE"]))
+        # number
+        d.add(String(bar_x + bar_w + 6, y + 2, f"{val}", fontName="Helvetica-Bold", fontSize=10, fillColor=st["NAVY"]))
+        y -= 22
 
     return d
 
@@ -725,41 +784,47 @@ def _build_auto_vs_human() -> Tuple[List[str], List[str]]:
     return (_shorten_list(automate, 6), _shorten_list(human, 6))
 
 
-def _cta_card(st) -> Table:
-    url = CALENDAR_URL or "https://example.com/your-calendar-link"
+def _cta_block(st) -> List[Any]:
+    """
+    CTA with a real clickable "button" (no visible URL).
+    """
+    url = CALENDAR_URL
 
-    lines = [
-        "If anything is unclear, let’s walk through it together.",
-        "We’ll confirm priorities and map a simple next-step plan.",
-        f'<a href="{safe_p(url)}"><b>Book a walkthrough call →</b></a>',
-    ]
+    title = _card_table(
+        "Want help implementing this?",
+        [
+            "If anything is unclear, let’s walk through it together.",
+            "We’ll confirm priorities and map a simple next-step plan.",
+        ],
+        st,
+        bg=st["CARD_BG_ALT"],
+        placeholder_if_empty=False,
+    )
 
-    rows = [[Paragraph("<b>Want help implementing this?</b>", st["h2"])]]
-    for ln in lines:
-        rows.append([Paragraph("• " + ln, st["body"])])
-
-    tbl = Table(rows, colWidths=[7.44 * inch], hAlign="LEFT")
-    tbl.setStyle(
+    btn_text = f'<link href="{safe_p(url)}" color="white"><b>Book a walkthrough call →</b></link>'
+    btn = Table([[Paragraph(btn_text, st["cta_btn"])]], colWidths=[7.44 * inch], hAlign="LEFT")
+    btn.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, -1), st["CARD_BG_ALT"]),
-                ("BOX", (0, 0), (-1, -1), 1, st["BORDER"]),
-                ("LINEBEFORE", (0, 0), (0, -1), 4, st["BLUE"]),
-                ("LEFTPADDING", (0, 0), (-1, -1), 14),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 14),
+                ("BACKGROUND", (0, 0), (-1, -1), st["BLUE_DK"]),
+                ("BOX", (0, 0), (-1, -1), 1, st["BLUE_DK"]),
                 ("TOPPADDING", (0, 0), (-1, -1), 12),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 14),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 14),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
             ]
         )
     )
-    return tbl
+
+    # Keep the CTA as a unit
+    return [KeepTogether([title, Spacer(1, 10), btn])]
 
 
 # --------------------------------------------------------------------
-# PDF GENERATION (V11)
+# PDF GENERATION (V12)
 # --------------------------------------------------------------------
-def generate_pdf_v11(
+def generate_pdf_v12(
     blueprint_text: str,
     pdf_path: str,
     lead_name: str,
@@ -785,7 +850,7 @@ def generate_pdf_v11(
 
     story: List[Any] = []
 
-    # ------------------- COVER (chart lower) -------------------
+    # ------------------- COVER -------------------
     story.append(Spacer(1, 22))
     story.append(Paragraph(safe_p(business_name) if business_name else "Your Business", st["title"]))
     story.append(Paragraph(safe_p(business_type) if business_type else "Service Business", st["subtitle"]))
@@ -805,6 +870,7 @@ def generate_pdf_v11(
     jobs_n = parse_int(jobs_per_week)
     team_n = parse_int(team_size)
 
+    # Keep the chart lower (as you wanted)
     story.append(Spacer(1, 22))
     story.append(Paragraph("Workload Snapshot", st["h1"]))
     if leads_n is not None and jobs_n is not None:
@@ -912,7 +978,7 @@ def generate_pdf_v11(
             story.append(PageBreak())
             alt = not alt
 
-    # ------------------- SECTION 4: SCORECARD + GAUGE -------------------
+    # ------------------- SECTION 4: SCORECARD + GAUGE + NEW VISUAL -------------------
     story.append(Paragraph("SECTION 4: Automation Scorecard", st["h1"]))
     sec4_lines = _extract_section_lines(blueprint_text, 4)
     sec4_items = _shorten_list([_strip_bullet_prefix(x) for x in sec4_lines], max_items=12)
@@ -933,9 +999,13 @@ def generate_pdf_v11(
         story.append(Spacer(1, 12))
         story.append(_score_gauge(score_val, st))
 
+        # NEW: Fill the bottom of the page with a second, useful visual
+        story.append(Spacer(1, 10))
+        story.append(_opportunity_by_area(score_val, sec4_items, st))
+
     story.append(PageBreak())
 
-    # ------------------- SECTION 5: 30-Day Action Plan (NO ORPHAN HEADER) -------------------
+    # ------------------- SECTION 5: 30-Day Action Plan -------------------
     sec5_lines = _extract_section_lines(blueprint_text, 5)
     week_blocks = _parse_week_blocks(sec5_lines)
     week_blocks = week_blocks[:4] if week_blocks else []
@@ -967,7 +1037,7 @@ def generate_pdf_v11(
     story.append(_card_table("Recommendations", sec6_items, st, bg=st["CARD_BG_ALT"]))
 
     story.append(Spacer(1, 14))
-    story.append(_cta_card(st))
+    story.extend(_cta_block(st))
 
     doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
 
@@ -1153,7 +1223,7 @@ SECTION 6: Final Recommendations
         pdf_filename = f"blueprint_{pdf_id}.pdf"
         pdf_path = os.path.join("/tmp", pdf_filename)
 
-        generate_pdf_v11(
+        generate_pdf_v12(
             blueprint_text=blueprint_text,
             pdf_path=pdf_path,
             lead_name=name,
@@ -1187,10 +1257,6 @@ SECTION 6: Final Recommendations
             "summary": summary_section,
             "pdf_url": pdf_url,
         }
-        if phone_e164:
-            store_context_for_phone(phone_e164, context_blob)
-        elif phone_raw:
-            store_context_for_phone(phone_raw, context_blob)
 
         return jsonify(
             {
