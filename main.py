@@ -133,15 +133,14 @@ def _strip_bullet_prefix(s: str) -> str:
     return s
 
 
-def _shorten_bullet(text: str, max_words: int = 10, max_chars: int = 72) -> str:
+def _shorten_bullet(text: str, max_words: int = 9, max_chars: int = 68) -> str:
     """
-    Hard-limit bullets so we can safely increase font size.
+    Hard-limit bullets so font can be large and pages look "designed".
     """
     t = clean_value(text)
     if not t:
         return ""
 
-    # Trim after first "sentence-ish" break
     for sep in [". ", "; ", " — ", " - "]:
         if sep in t:
             t = t.split(sep, 1)[0].strip()
@@ -156,8 +155,8 @@ def _shorten_bullet(text: str, max_words: int = 10, max_chars: int = 72) -> str:
     return t
 
 
-def _shorten_list(items: List[str], max_items: int, max_words: int = 10, max_chars: int = 72) -> List[str]:
-    out = []
+def _shorten_list(items: List[str], max_items: int, max_words: int = 9, max_chars: int = 68) -> List[str]:
+    out: List[str] = []
     for x in items:
         s = _shorten_bullet(x, max_words=max_words, max_chars=max_chars)
         if s:
@@ -173,7 +172,7 @@ def _shorten_list(items: List[str], max_items: int, max_words: int = 10, max_cha
 def _brand_styles():
     styles = getSampleStyleSheet()
 
-    # Palette (brighter)
+    # Palette
     NAVY = colors.HexColor("#0B1B2B")
     BLUE = colors.HexColor("#2563EB")
     BLUE_DK = colors.HexColor("#1E40AF")
@@ -231,12 +230,13 @@ def _brand_styles():
         spaceAfter=1,
     )
 
+    # MAIN BODY bigger (phone)
     body = ParagraphStyle(
         "ApexBody",
         parent=styles["BodyText"],
         fontName="Helvetica",
-        fontSize=15,
-        leading=20,
+        fontSize=16,
+        leading=21,
         textColor=colors.HexColor("#111827"),
         spaceAfter=2,
     )
@@ -251,12 +251,12 @@ def _brand_styles():
         spaceAfter=3,
     )
 
-    # Bigger “Week” body so Section 5 fills pages better
+    # Weeks even bigger to fill pages
     body_week = ParagraphStyle(
         "ApexBodyWeek",
         parent=body,
-        fontSize=16,
-        leading=21,
+        fontSize=17,
+        leading=22,
         spaceAfter=3,
     )
 
@@ -298,23 +298,23 @@ def _header_footer(canvas, doc):
 
     canvas.setStrokeColor(st["SOFT"])
     canvas.setLineWidth(1)
-    canvas.line(42, h - 44, w - 42, h - 44)
+    canvas.line(38, h - 44, w - 38, h - 44)
 
     canvas.setFont("Helvetica-Bold", 9)
     canvas.setFillColor(st["NAVY"])
-    canvas.drawString(42, h - 36, "Apex Automation — AI Automation Blueprint")
+    canvas.drawString(38, h - 36, "Apex Automation — AI Automation Blueprint")
 
     canvas.setFont("Helvetica", 9)
     canvas.setFillColor(st["MUTED"])
-    canvas.drawRightString(w - 42, h - 36, time.strftime("%b %d, %Y"))
+    canvas.drawRightString(w - 38, h - 36, time.strftime("%b %d, %Y"))
 
     canvas.setStrokeColor(st["SOFT"])
-    canvas.line(42, 44, w - 42, 44)
+    canvas.line(38, 44, w - 38, 44)
 
     canvas.setFont("Helvetica", 9)
     canvas.setFillColor(st["MUTED"])
-    canvas.drawString(42, 32, "Confidential — Prepared for the business owner listed on the cover")
-    canvas.drawRightString(w - 42, 32, f"Page {doc.page}")
+    canvas.drawString(38, 32, "Confidential — Prepared for the business owner listed on the cover")
+    canvas.drawRightString(w - 38, 32, f"Page {doc.page}")
 
     canvas.restoreState()
 
@@ -347,7 +347,8 @@ def _card_table(
         for b in clean_bullets:
             rows.append([Paragraph("• " + safe_p(b), body_style)])
 
-    tbl = Table(rows, colWidths=[7.55 * inch], hAlign="LEFT")
+    # Width matches margins (612 - 38 - 38 = 536) => 7.44in
+    tbl = Table(rows, colWidths=[7.44 * inch], hAlign="LEFT")
     tbl.setStyle(
         TableStyle(
             [
@@ -376,9 +377,6 @@ def _add_card_no_split(
     week: bool = False,
     extra_padding: int = 0,
 ):
-    """
-    Ensures a card NEVER splits across pages by chunking into multiple cards.
-    """
     bullets = [clean_value(x) for x in bullets if clean_value(x)]
 
     if not bullets and placeholder_if_empty:
@@ -404,7 +402,7 @@ def _add_card_no_split(
 
 
 def _fix_header_bar(title: str, st) -> Table:
-    tbl = Table([[Paragraph(safe_p(title), st["fix_header"])]], colWidths=[7.55 * inch])
+    tbl = Table([[Paragraph(safe_p(title), st["fix_header"])]], colWidths=[7.44 * inch])
     tbl.setStyle(
         TableStyle(
             [
@@ -420,10 +418,12 @@ def _fix_header_bar(title: str, st) -> Table:
     return tbl
 
 
+# --------------------------------------------------------------------
+# CHARTS (SAFE)
+# --------------------------------------------------------------------
 def _bar_chart(title: str, labels: List[str], values: List[int], st, compact: bool = False) -> Drawing:
-    # More compact cover chart so we can fit “At a glance” on the cover.
-    height = 155 if compact else 215
-    plot_h = 85 if compact else 135
+    height = 155 if compact else 190
+    plot_h = 85 if compact else 110
     top_y = height - 18
 
     d = Drawing(460, height)
@@ -457,14 +457,14 @@ def _bar_chart(title: str, labels: List[str], values: List[int], st, compact: bo
 
 
 def _line_chart(title: str, labels: List[str], y_values: List[int], st) -> Drawing:
-    d = Drawing(460, 215)
-    d.add(String(0, 195, title, fontName="Helvetica-Bold", fontSize=12, fillColor=st["NAVY"]))
+    d = Drawing(460, 190)
+    d.add(String(0, 172, title, fontName="Helvetica-Bold", fontSize=12, fillColor=st["NAVY"]))
 
     lc = HorizontalLineChart()
     lc.x = 40
-    lc.y = 35
+    lc.y = 28
     lc.width = 380
-    lc.height = 135
+    lc.height = 110
 
     # IMPORTANT: y-values only (NOT tuples)
     lc.data = [y_values]
@@ -488,6 +488,26 @@ def _line_chart(title: str, labels: List[str], y_values: List[int], st) -> Drawi
 
     d.add(lc)
     return d
+
+
+def _hours_saved_chart(leads_n: Optional[int], jobs_n: Optional[int], team_n: Optional[int], st) -> Drawing:
+    # Simple, believable heuristic that reads well (not "mathy")
+    leads = leads_n or 0
+    jobs = jobs_n or 0
+    team = team_n or 0
+
+    follow = max(4, min(12, int(round(leads / 15)) if leads else 6))
+    payroll = max(2, min(8, int(round(team / 2)) if team else 4))
+    schedule = max(2, min(7, int(round(team / 3)) if team else 3))
+    values = [follow, payroll, schedule]
+
+    return _bar_chart(
+        "Estimated Hours Saved Per Week (after fixes)",
+        ["Follow-ups", "Payroll", "Scheduling"],
+        values,
+        st,
+        compact=False,
+    )
 
 
 # --------------------------------------------------------------------
@@ -602,14 +622,77 @@ def _parse_week_blocks(section5_lines: List[str]) -> List[Tuple[str, List[str]]]
     return blocks
 
 
-def _chunk(items: List[str], n: int) -> List[List[str]]:
-    return [items[i:i + n] for i in range(0, len(items), n)]
+# --------------------------------------------------------------------
+# VALUE SECTIONS (NEW)
+# --------------------------------------------------------------------
+def _build_numbers_suggest(leads_n: Optional[int], jobs_n: Optional[int], rt: str) -> List[str]:
+    out: List[str] = []
+    if leads_n is not None and jobs_n is not None and leads_n > 0:
+        close = int(round((jobs_n / leads_n) * 100))
+        out.append(f"Close rate looks strong (~{close}%).")
+        out.append(f"Workload is heavy: {jobs_n} jobs per week.")
+    if rt and rt.lower().startswith(("immediate", "instant")):
+        out.append("Fast response helps you win more jobs.")
+    out.append("Best ROI: follow-ups, payroll, scheduling, paperwork.")
+    return _shorten_list(out, max_items=5, max_words=9, max_chars=68)
+
+
+def _build_replaces(sec2_lines: List[str]) -> List[str]:
+    # Pull from SECTION 2, plus defaults
+    text = " ".join(sec2_lines).lower()
+    out = []
+    if "follow" in text or "text" in text or "email" in text:
+        out.append("Manual texting, emailing, and chasing leads.")
+    if "paperwork" in text or "forms" in text:
+        out.append("Paper forms, photos, and scattered job notes.")
+    if "payroll" in text or "hours" in text:
+        out.append("Manual payroll checks and time tracking.")
+    if "schedule" in text or "staff" in text:
+        out.append("Back-and-forth scheduling and staff updates.")
+    if not out:
+        out = [
+            "Manual follow-ups that slip through cracks.",
+            "Paperwork that delays jobs and payments.",
+            "Staff scheduling done by constant texting.",
+        ]
+    return _shorten_list(out, max_items=5, max_words=9, max_chars=68)
+
+
+def _build_day_to_day() -> List[str]:
+    out = [
+        "New lead triggers texts until booked or closed.",
+        "You see missed calls, leads, and pipeline daily.",
+        "Team gets schedules, reminders, and updates automatically.",
+        "Payroll prep is ready with approvals and alerts.",
+        "You review a simple weekly performance snapshot.",
+    ]
+    return _shorten_list(out, max_items=6, max_words=9, max_chars=68)
+
+
+def _build_auto_vs_human() -> Tuple[List[str], List[str]]:
+    automate = [
+        "Lead follow-ups, reminders, and no-show nudges.",
+        "Appointment confirmations and reschedule prompts.",
+        "Basic staff reminders and schedule notifications.",
+        "Payroll prep, time logs, and approval alerts.",
+        "Simple reporting: leads, jobs, and response time.",
+    ]
+    human = [
+        "Pricing, quoting, and final customer decisions.",
+        "Complex customer objections and special situations.",
+        "Quality control, training, and team leadership.",
+        "High-value upsells and relationship building.",
+    ]
+    return (
+        _shorten_list(automate, max_items=6, max_words=9, max_chars=68),
+        _shorten_list(human, max_items=6, max_words=9, max_chars=68),
+    )
 
 
 # --------------------------------------------------------------------
-# PDF GENERATION (V7: fix orphan FIX headers + week pairing + less empty pages)
+# PDF GENERATION (V8)
 # --------------------------------------------------------------------
-def generate_pdf_v7(
+def generate_pdf_v8(
     blueprint_text: str,
     pdf_path: str,
     lead_name: str,
@@ -627,8 +710,8 @@ def generate_pdf_v7(
         pagesize=letter,
         title="AI Automation Blueprint",
         author="Apex Automation",
-        leftMargin=42,
-        rightMargin=42,
+        leftMargin=38,
+        rightMargin=38,
         topMargin=58,
         bottomMargin=58,
     )
@@ -636,7 +719,7 @@ def generate_pdf_v7(
     story: List[Any] = []
 
     # ------------------- COVER -------------------
-    story.append(Spacer(1, 24))
+    story.append(Spacer(1, 22))
     story.append(Paragraph(safe_p(business_name) if business_name else "Your Business", st["title"]))
     story.append(Paragraph(safe_p(business_type) if business_type else "Service Business", st["subtitle"]))
 
@@ -653,35 +736,18 @@ def generate_pdf_v7(
 
     leads_n = parse_int(leads_per_week)
     jobs_n = parse_int(jobs_per_week)
+    team_n = parse_int(team_size)
 
-    # Compact chart + attempt to keep “At a glance” on the cover
     story.append(Spacer(1, 6))
     story.append(Paragraph("Workload Snapshot", st["h1"]))
     if leads_n is not None and jobs_n is not None:
         story.append(_bar_chart("Leads per Week vs Jobs per Week", ["Leads", "Jobs"], [leads_n, jobs_n], st, compact=True))
-
-        ratio = None
-        if leads_n > 0:
-            ratio = int(round((jobs_n / leads_n) * 100))
-
-        insights = []
-        if ratio is not None:
-            insights.append(f"Close rate around {ratio}%.")
-        if clean_value(lead_response_time).lower().startswith(("immediate", "instant")):
-            insights.append("Fast response is a real advantage.")
-        insights.append("Biggest ROI: follow-ups, payroll, paperwork.")
-        insights = _shorten_list(insights, max_items=3, max_words=9, max_chars=60)
-
-        # This prevents “At a glance” being alone on Page 2:
-        story.append(CondPageBreak(_estimate_card_height(5, st) + 30))
-        story.append(_card_table("At a glance", insights, st, bg=st["CARD_BG"], placeholder_if_empty=False))
     else:
-        story.append(CondPageBreak(_estimate_card_height(3, st) + 30))
         story.append(_card_table("At a glance", ["Add leads/week + jobs/week to unlock visuals."], st, bg=st["CARD_BG"], placeholder_if_empty=False))
 
     story.append(PageBreak())
 
-    # ------------------- EXEC SUMMARY -------------------
+    # ------------------- EXEC SUMMARY (NOW INCLUDES NUMBERS + NEW VALUE SECTIONS) -------------------
     story.append(Paragraph("Executive Summary", st["h1"]))
 
     sec1_lines = _extract_section_lines(blueprint_text, 1)
@@ -701,19 +767,37 @@ def generate_pdf_v7(
     else:
         _add_card_no_split(story, "SECTION 2: What You Told Me", ["(No details found)"], st, bg=st["CARD_BG_ALT"], max_bullets=6)
 
+    # MOVE “What the numbers suggest” HERE (removes that standalone page later)
+    numbers_suggest = _build_numbers_suggest(leads_n, jobs_n, lead_response_time)
+    _add_card_no_split(story, "What the numbers suggest", numbers_suggest, st, bg=st["CARD_BG_ALT"], max_bullets=7, placeholder_if_empty=False)
+
+    # NEW VALUE: replaces + day-to-day + automate vs human
+    story.append(Spacer(1, 2))
+    story.append(Paragraph("How this turns into a working system", st["h1"]))
+
+    replaces = _build_replaces(sec2_lines)
+    _add_card_no_split(story, "What this replaces", replaces, st, bg=st["CARD_BG"], max_bullets=6, placeholder_if_empty=False)
+
+    day2day = _build_day_to_day()
+    _add_card_no_split(story, "What this looks like day-to-day", day2day, st, bg=st["CARD_BG_ALT"], max_bullets=6, placeholder_if_empty=False)
+
+    auto_list, human_list = _build_auto_vs_human()
+    _add_card_no_split(story, "What we automate", auto_list, st, bg=st["CARD_BG"], max_bullets=6, placeholder_if_empty=False)
+    _add_card_no_split(story, "What stays human", human_list, st, bg=st["CARD_BG_ALT"], max_bullets=6, placeholder_if_empty=False)
+
     story.append(PageBreak())
 
-    # ------------------- METRICS & VISUALS -------------------
+    # ------------------- METRICS & VISUALS (NOW 3 CHARTS) -------------------
     story.append(Paragraph("Key Metrics & Visuals", st["h1"]))
     story.append(Paragraph("Generated from the numbers you submitted.", st["small"]))
-    story.append(Spacer(1, 8))
+    story.append(Spacer(1, 6))
 
     if leads_n is not None and jobs_n is not None:
         story.append(_bar_chart("Leads per Week vs Jobs per Week", ["Leads", "Jobs"], [leads_n, jobs_n], st))
-        story.append(Spacer(1, 12))
+        story.append(Spacer(1, 6))
     else:
         story.append(Paragraph("Leads/jobs numbers weren’t clear, so that chart was skipped.", st["small"]))
-        story.append(Spacer(1, 10))
+        story.append(Spacer(1, 6))
 
     rt = clean_value(lead_response_time).lower()
     if rt:
@@ -726,22 +810,14 @@ def generate_pdf_v7(
         elif "day" in rt or "24" in rt:
             conv = [55, 50, 40, 30, 20, 10]
         story.append(_line_chart("Response Time vs Likely Conversion (estimated)", labels, conv, st))
+        story.append(Spacer(1, 6))
 
-    insights = []
-    if leads_n is not None and jobs_n is not None and leads_n > 0:
-        insights.append(f"Your workload is heavy: {jobs_n} jobs/week.")
-        insights.append("Automation prevents missed follow-ups and delays.")
-    if clean_value(lead_response_time).lower().startswith(("immediate", "instant")):
-        insights.append("Your speed helps win deals—protect that advantage.")
-    insights.append("Focus: follow-ups, payroll, paperwork.")
-    insights = _shorten_list(insights, max_items=5, max_words=10, max_chars=70)
-
-    story.append(Spacer(1, 10))
-    _add_card_no_split(story, "What the numbers suggest", insights, st, bg=st["CARD_BG_ALT"], max_bullets=7, placeholder_if_empty=False)
+    # 3rd graph
+    story.append(_hours_saved_chart(leads_n, jobs_n, team_n, st))
 
     story.append(PageBreak())
 
-    # ------------------- SECTION 3: FIXES -------------------
+    # ------------------- SECTION 3: FIXES (NO ORPHAN HEADERS) -------------------
     story.append(Paragraph("SECTION 3: Your Top 3 Automation Fixes", st["h1"]))
 
     sec3_lines = _extract_section_lines(blueprint_text, 3)
@@ -754,12 +830,10 @@ def generate_pdf_v7(
         for fx in fixes[:3]:
             bg = st["CARD_BG_ALT"] if alt else st["CARD_BG"]
 
-            # Shorten lists hard
             fixes_list = _shorten_list(fx.get("fixes", []), 8)
             does_list = _shorten_list(fx.get("does", []), 8)
             incl_list = _shorten_list(fx.get("included", []), 8)
 
-            # --- Prevent orphan header: keep header + first card together ---
             first_chunk = fixes_list[:7] if fixes_list else []
             est_combo = 80 + _estimate_card_height(max(2, len(first_chunk) + 1), st)
             story.append(CondPageBreak(est_combo + 20))
@@ -768,7 +842,6 @@ def generate_pdf_v7(
             first_card = _card_table("What This Fixes", first_chunk, st, bg=bg, placeholder_if_empty=True)
             story.append(KeepTogether([header, Spacer(1, 8), first_card, Spacer(1, 8)]))
 
-            # Remaining chunks for “What This Fixes”
             remaining = fixes_list[7:]
             if remaining:
                 _add_card_no_split(story, "What This Fixes", remaining, st, bg=bg, max_bullets=7)
@@ -789,18 +862,15 @@ def generate_pdf_v7(
 
     story.append(PageBreak())
 
-    # ------------------- SECTION 5 (FORCED 2 WEEKS PER PAGE) -------------------
+    # ------------------- SECTION 5 (2 WEEKS PER PAGE) -------------------
     story.append(Paragraph("SECTION 5: 30-Day Action Plan", st["h1"]))
     sec5_lines = _extract_section_lines(blueprint_text, 5)
     week_blocks = _parse_week_blocks(sec5_lines)
-
-    # Normalize to 4 weeks if present
     week_blocks = week_blocks[:4] if week_blocks else []
 
     if not week_blocks:
         _add_card_no_split(story, "30-Day Plan", ["(No week plan found in SECTION 5)"], st, bg=st["CARD_BG"], max_bullets=6)
     else:
-        # Week 1 + Week 2 fill this page
         pair1 = week_blocks[:2]
         pair2 = week_blocks[2:4]
 
@@ -816,11 +886,10 @@ def generate_pdf_v7(
                 bg=bg,
                 max_bullets=3,
                 week=True,
-                extra_padding=6,  # makes these feel “designed”, not Word
+                extra_padding=8,
             )
             alt = not alt
 
-        # Force next two weeks on their own page
         story.append(PageBreak())
 
         alt = True
@@ -835,7 +904,7 @@ def generate_pdf_v7(
                 bg=bg,
                 max_bullets=3,
                 week=True,
-                extra_padding=6,
+                extra_padding=8,
             )
             alt = not alt
 
@@ -953,7 +1022,6 @@ def run_blueprint():
     }
     raw_json = json.dumps(source_json, indent=2, ensure_ascii=False)
 
-    # IMPORTANT: make the model write SHORT bullets so font can be larger.
     prompt = f"""
 You are a senior automation consultant writing a professional client blueprint.
 
@@ -1054,12 +1122,12 @@ SECTION 6: Final Recommendations
         if marker in blueprint_text:
             summary_section = blueprint_text.split(marker, 1)[0].strip()
 
-        # Generate PDF (V7)
+        # Generate PDF (V8)
         pdf_id = uuid.uuid4().hex
         pdf_filename = f"blueprint_{pdf_id}.pdf"
         pdf_path = os.path.join("/tmp", pdf_filename)
 
-        generate_pdf_v7(
+        generate_pdf_v8(
             blueprint_text=blueprint_text,
             pdf_path=pdf_path,
             lead_name=name,
