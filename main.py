@@ -153,6 +153,18 @@ def _shorten_list(items: List[str], max_items: int, max_words: int = 9, max_char
     return out
 
 
+def _score_interpretation(score: int) -> str:
+    """
+    1-line interpretation under the scorecard.
+    """
+    s = max(0, min(100, int(score)))
+    if s <= 39:
+        return "Interpretation: High opportunity — big wins available quickly."
+    if s <= 69:
+        return "Interpretation: Medium opportunity — strong base with clear wins."
+    return "Interpretation: Strong foundation — optimize and scale your system."
+
+
 # --------------------------------------------------------------------
 # PDF DESIGN SYSTEM
 # --------------------------------------------------------------------
@@ -406,7 +418,6 @@ def _add_two_cards_page(
     card_b_h = _flowable_h(card_b, avail_w)
 
     needed_min = title_h + card_a_h + 8 + gap_min + card_b_h
-
     story.append(CondPageBreak(needed_min + 6))
 
     used_no_gap = title_h + card_a_h + 8 + card_b_h
@@ -430,7 +441,17 @@ def _add_two_cards_page(
 # --------------------------------------------------------------------
 # CHARTS
 # --------------------------------------------------------------------
-def _bar_chart(title: str, labels: List[str], values: List[int], st, compact: bool = False) -> Drawing:
+def _bar_chart(
+    title: str,
+    labels: List[str],
+    values: List[int],
+    st,
+    compact: bool = False,
+    show_value_labels: bool = False,
+) -> Drawing:
+    """
+    show_value_labels=True is used ONLY on the cover compact chart (per request).
+    """
     height = 155 if compact else 190
     plot_h = 85 if compact else 110
     top_y = height - 18
@@ -461,7 +482,33 @@ def _bar_chart(title: str, labels: List[str], values: List[int], st, compact: bo
     bc.valueAxis.labels.fontSize = 9
     bc.valueAxis.labels.fillColor = st["MUTED"]
 
+    # Make bar geometry deterministic so we can place value labels cleanly.
+    n = max(1, len(values))
+    bc.barWidth = max(10, int(bc.width / (n * 2.2)))
+    bc.barSpacing = max(6, int(bc.barWidth * 0.6))
+
     d.add(bc)
+
+    if show_value_labels and values:
+        total_w = n * bc.barWidth + (n - 1) * bc.barSpacing
+        start_x = bc.x + max(0, (bc.width - total_w) / 2.0)
+
+        for i, v in enumerate(values):
+            v_int = int(v)
+            x_center = start_x + i * (bc.barWidth + bc.barSpacing) + (bc.barWidth / 2.0)
+            y_top = bc.y + (0 if bc.valueAxis.valueMax == 0 else (v_int / bc.valueAxis.valueMax) * bc.height)
+
+            s = String(
+                x_center,
+                y_top + 6,
+                f"{v_int}",
+                fontName="Helvetica-Bold",
+                fontSize=10,
+                fillColor=st["NAVY"],
+            )
+            s.textAnchor = "middle"
+            d.add(s)
+
     return d
 
 
@@ -513,6 +560,7 @@ def _hours_saved_chart(leads_n: Optional[int], team_n: Optional[int], st) -> Dra
         values,
         st,
         compact=False,
+        show_value_labels=False,
     )
 
 
@@ -545,19 +593,13 @@ def _score_gauge(score: int, st) -> Drawing:
 
 
 def _opportunity_by_area(score: int, scorecard_items: List[str], st) -> Drawing:
-    """
-    Fills the bottom of Section 4 with a second visual that adds real value.
-    Shows where automation ROI is likely highest (Customer / Ops / Team).
-    """
     score = max(0, min(100, int(score)))
     opportunity = max(10, 100 - score)  # lower score => higher opportunity
 
     text_blob = " ".join([clean_value(x).lower() for x in scorecard_items if clean_value(x)])
 
-    # Base weights
     w_customer, w_ops, w_team = 0.34, 0.33, 0.33
 
-    # Keyword nudges based on what they wrote in the scorecard
     if any(k in text_blob for k in ["follow", "response", "lead", "customer", "text", "call"]):
         w_customer += 0.15
     if any(k in text_blob for k in ["payroll", "paperwork", "document", "forms", "invoice", "admin"]):
@@ -572,7 +614,6 @@ def _opportunity_by_area(score: int, scorecard_items: List[str], st) -> Drawing:
     v_ops = int(round(opportunity * w_ops))
     v_team = int(round(opportunity * w_team))
 
-    # Clamp for nice visuals
     v_customer = max(5, min(95, v_customer))
     v_ops = max(5, min(95, v_ops))
     v_team = max(5, min(95, v_team))
@@ -597,12 +638,9 @@ def _opportunity_by_area(score: int, scorecard_items: List[str], st) -> Drawing:
     y = 62
     for label, val in rows:
         d.add(String(pad_x, y + 2, label, fontName="Helvetica", fontSize=10, fillColor=st["NAVY"]))
-        # background
         d.add(Rect(bar_x, y, bar_w, bar_h, strokeColor=st["BORDER"], fillColor=st["SOFT"], strokeWidth=1))
-        # fill
         fill_w = int(bar_w * (val / 100.0))
         d.add(Rect(bar_x, y, fill_w, bar_h, strokeColor=None, fillColor=st["BLUE"]))
-        # number
         d.add(String(bar_x + bar_w + 6, y + 2, f"{val}", fontName="Helvetica-Bold", fontSize=10, fillColor=st["NAVY"]))
         y -= 22
 
@@ -817,14 +855,13 @@ def _cta_block(st) -> List[Any]:
         )
     )
 
-    # Keep the CTA as a unit
     return [KeepTogether([title, Spacer(1, 10), btn])]
 
 
 # --------------------------------------------------------------------
-# PDF GENERATION (V12)
+# PDF GENERATION (V13)
 # --------------------------------------------------------------------
-def generate_pdf_v12(
+def generate_pdf_v13(
     blueprint_text: str,
     pdf_path: str,
     lead_name: str,
@@ -870,11 +907,20 @@ def generate_pdf_v12(
     jobs_n = parse_int(jobs_per_week)
     team_n = parse_int(team_size)
 
-    # Keep the chart lower (as you wanted)
     story.append(Spacer(1, 22))
     story.append(Paragraph("Workload Snapshot", st["h1"]))
     if leads_n is not None and jobs_n is not None:
-        story.append(_bar_chart("Leads per Week vs Jobs per Week", ["Leads", "Jobs"], [leads_n, jobs_n], st, compact=True))
+        # CHANGE #3: show values above bars on the COVER chart only
+        story.append(
+            _bar_chart(
+                "Leads per Week vs Jobs per Week",
+                ["Leads", "Jobs"],
+                [leads_n, jobs_n],
+                st,
+                compact=True,
+                show_value_labels=True,
+            )
+        )
     else:
         story.append(_card_table("At a glance", ["Add leads/week + jobs/week to unlock visuals."], st, bg=st["CARD_BG"], placeholder_if_empty=False))
 
@@ -996,10 +1042,13 @@ def generate_pdf_v12(
     story.append(_card_table("Scorecard (0–100)", sec4_items, st, bg=st["CARD_BG_ALT"]))
 
     if score_val is not None:
-        story.append(Spacer(1, 12))
+        # CHANGE #2: 1-line interpretation under scorecard
+        story.append(Spacer(1, 6))
+        story.append(Paragraph(_score_interpretation(score_val), st["small"]))
+
+        story.append(Spacer(1, 10))
         story.append(_score_gauge(score_val, st))
 
-        # NEW: Fill the bottom of the page with a second, useful visual
         story.append(Spacer(1, 10))
         story.append(_opportunity_by_area(score_val, sec4_items, st))
 
@@ -1028,7 +1077,9 @@ def generate_pdf_v12(
         wk4 = _shorten_list(w4[1], 3, max_words=9, max_chars=65)
         c3 = _card_table(w3[0], wk3, st, bg=st["CARD_BG_ALT"], week=True, extra_padding=8)
         c4 = _card_table(w4[0], wk4, st, bg=st["CARD_BG"], week=True, extra_padding=8)
-        _add_two_cards_page(story, doc, st, None, c3, c4, gap_min=18, gap_max=52)
+
+        # CHANGE #1: add header on Week 3/4 page
+        _add_two_cards_page(story, doc, st, "SECTION 5: 30-Day Action Plan (continued)", c3, c4, gap_min=18, gap_max=52)
 
     # ------------------- SECTION 6 + CTA -------------------
     story.append(Paragraph("SECTION 6: Final Recommendations", st["h1"]))
@@ -1223,7 +1274,7 @@ SECTION 6: Final Recommendations
         pdf_filename = f"blueprint_{pdf_id}.pdf"
         pdf_path = os.path.join("/tmp", pdf_filename)
 
-        generate_pdf_v12(
+        generate_pdf_v13(
             blueprint_text=blueprint_text,
             pdf_path=pdf_path,
             lead_name=name,
