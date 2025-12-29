@@ -42,7 +42,6 @@ S3_REGION = os.environ.get("S3_REGION", "us-east-2")
 s3_client = boto3.client("s3", region_name=S3_REGION)
 
 # ---------- CTA / CALENDAR ----------
-# Env var still supported, but if you don't set it, this link is used by default.
 DEFAULT_CALENDAR_URL = "https://api.leadconnectorhq.com/widget/bookings/automation-strategy-call-1"
 CALENDAR_URL = (os.environ.get("CALENDAR_URL", "") or "").strip() or DEFAULT_CALENDAR_URL
 
@@ -93,6 +92,19 @@ def store_context_for_phone(phone: str, context: Dict[str, Any]) -> None:
     if not key:
         return
     _CONTEXT_BY_PHONE[key] = {**context, "expires_at": time.time() + CONTEXT_TTL_SECONDS}
+
+
+def get_context_for_phone(phone: str) -> Optional[Dict[str, Any]]:
+    cleanup_context_store()
+    key = normalize_phone(phone)
+    if not key:
+        return None
+    item = _CONTEXT_BY_PHONE.get(key)
+    if not item:
+        return None
+    out = dict(item)
+    out.pop("expires_at", None)
+    return out
 
 
 def parse_int(s: str) -> Optional[int]:
@@ -154,15 +166,12 @@ def _shorten_list(items: List[str], max_items: int, max_words: int = 9, max_char
 
 
 def _score_interpretation(score: int) -> str:
-    """
-    1-line interpretation under the scorecard.
-    """
     s = max(0, min(100, int(score)))
     if s <= 39:
-        return "Interpretation: High opportunity — big wins available quickly."
+        return "Interpretation: Big opportunity — fast wins are available."
     if s <= 69:
-        return "Interpretation: Medium opportunity — strong base with clear wins."
-    return "Interpretation: Strong foundation — optimize and scale your system."
+        return "Interpretation: Good base — clear fixes will help a lot."
+    return "Interpretation: Strong base — focus on clean-up and growth."
 
 
 # --------------------------------------------------------------------
@@ -186,8 +195,8 @@ def _brand_styles():
         "ApexTitle",
         parent=styles["Title"],
         fontName="Helvetica-Bold",
-        fontSize=36,
-        leading=40,
+        fontSize=34,
+        leading=38,
         alignment=TA_CENTER,
         textColor=NAVY,
         spaceAfter=6,
@@ -197,8 +206,8 @@ def _brand_styles():
         "ApexSubtitle",
         parent=styles["Heading2"],
         fontName="Helvetica",
-        fontSize=17,
-        leading=21,
+        fontSize=16,
+        leading=20,
         alignment=TA_CENTER,
         textColor=MUTED,
         spaceAfter=10,
@@ -208,8 +217,8 @@ def _brand_styles():
         "ApexH1",
         parent=styles["Heading2"],
         fontName="Helvetica-Bold",
-        fontSize=21,
-        leading=25,
+        fontSize=20,
+        leading=24,
         textColor=NAVY,
         spaceBefore=6,
         spaceAfter=6,
@@ -219,8 +228,8 @@ def _brand_styles():
         "ApexH2",
         parent=styles["Heading3"],
         fontName="Helvetica-Bold",
-        fontSize=16,
-        leading=20,
+        fontSize=15,
+        leading=19,
         textColor=NAVY,
         spaceBefore=1,
         spaceAfter=1,
@@ -230,8 +239,8 @@ def _brand_styles():
         "ApexBody",
         parent=styles["BodyText"],
         fontName="Helvetica",
-        fontSize=16,
-        leading=21,
+        fontSize=15,
+        leading=20,
         textColor=colors.HexColor("#111827"),
         spaceAfter=2,
     )
@@ -239,8 +248,8 @@ def _brand_styles():
     body_week = ParagraphStyle(
         "ApexBodyWeek",
         parent=body,
-        fontSize=17,
-        leading=22,
+        fontSize=16,
+        leading=21,
         spaceAfter=3,
     )
 
@@ -307,7 +316,7 @@ def _header_footer(canvas, doc):
 
     canvas.setFont("Helvetica-Bold", 9)
     canvas.setFillColor(st["NAVY"])
-    canvas.drawString(38, h - 36, "Apex Automation — AI Automation Blueprint")
+    canvas.drawString(38, h - 36, "Apex Automation — Business Fix Plan")
 
     canvas.setFont("Helvetica", 9)
     canvas.setFillColor(st["MUTED"])
@@ -405,9 +414,6 @@ def _add_two_cards_page(
     gap_max: int = 44,
     add_pagebreak: bool = True,
 ):
-    """
-    Packs 2 cards per page WITHOUT orphaning the page title.
-    """
     avail_w = doc.width
     frame_h = _page_frame_h(doc)
 
@@ -449,9 +455,6 @@ def _bar_chart(
     compact: bool = False,
     show_value_labels: bool = False,
 ) -> Drawing:
-    """
-    show_value_labels=True is used ONLY on the cover compact chart (per request).
-    """
     height = 155 if compact else 190
     plot_h = 85 if compact else 110
     top_y = height - 18
@@ -482,7 +485,6 @@ def _bar_chart(
     bc.valueAxis.labels.fontSize = 9
     bc.valueAxis.labels.fillColor = st["MUTED"]
 
-    # Make bar geometry deterministic so we can place value labels cleanly.
     n = max(1, len(values))
     bc.barWidth = max(10, int(bc.width / (n * 2.2)))
     bc.barSpacing = max(6, int(bc.barWidth * 0.6))
@@ -546,17 +548,21 @@ def _line_chart(title: str, labels: List[str], y_values: List[int], st) -> Drawi
 
 
 def _hours_saved_chart(leads_n: Optional[int], team_n: Optional[int], st) -> Drawing:
+    """
+    Generic chart that works for any business.
+    We label it in plain language (no industry-specific assumptions).
+    """
     leads = leads_n or 0
     team = team_n or 0
 
     follow = max(4, min(12, int(round(leads / 15)) if leads else 6))
-    payroll = max(2, min(8, int(round(team / 2)) if team else 4))
+    admin = max(2, min(8, int(round(team / 2)) if team else 4))
     schedule = max(2, min(7, int(round(team / 3)) if team else 3))
-    values = [follow, payroll, schedule]
+    values = [follow, admin, schedule]
 
     return _bar_chart(
         "Estimated Hours Saved Per Week (after fixes)",
-        ["Follow-ups", "Payroll", "Scheduling"],
+        ["Follow-ups", "Admin work", "Scheduling"],
         values,
         st,
         compact=False,
@@ -592,19 +598,22 @@ def _score_gauge(score: int, st) -> Drawing:
     return d
 
 
-def _opportunity_by_area(score: int, scorecard_items: List[str], st) -> Drawing:
+def _improvement_by_area(score: int, scorecard_items: List[str], st) -> Drawing:
+    """
+    Replaces 'Automation Opportunity by Area' with neutral language.
+    """
     score = max(0, min(100, int(score)))
-    opportunity = max(10, 100 - score)  # lower score => higher opportunity
+    opportunity = max(10, 100 - score)
 
     text_blob = " ".join([clean_value(x).lower() for x in scorecard_items if clean_value(x)])
 
     w_customer, w_ops, w_team = 0.34, 0.33, 0.33
 
-    if any(k in text_blob for k in ["follow", "response", "lead", "customer", "text", "call"]):
+    if any(k in text_blob for k in ["follow", "response", "lead", "customer", "client", "text", "call", "reply"]):
         w_customer += 0.15
-    if any(k in text_blob for k in ["payroll", "paperwork", "document", "forms", "invoice", "admin"]):
+    if any(k in text_blob for k in ["paperwork", "forms", "invoice", "admin", "process", "inventory", "orders"]):
         w_ops += 0.15
-    if any(k in text_blob for k in ["staff", "team", "employee", "training", "management"]):
+    if any(k in text_blob for k in ["staff", "team", "employee", "training", "handoff"]):
         w_team += 0.15
 
     total = w_customer + w_ops + w_team
@@ -626,13 +635,13 @@ def _opportunity_by_area(score: int, scorecard_items: List[str], st) -> Drawing:
     bar_h = 12
 
     d = Drawing(w, h)
-    d.add(String(0, 102, "Automation Opportunity by Area", fontName="Helvetica-Bold", fontSize=12, fillColor=st["NAVY"]))
-    d.add(String(0, 86, "Higher bars = bigger payoff from cleanup + automation.", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
+    d.add(String(0, 102, "Biggest Improvement Areas", fontName="Helvetica-Bold", fontSize=12, fillColor=st["NAVY"]))
+    d.add(String(0, 86, "Higher bars = bigger payoff from fixing the system.", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
 
     rows = [
         ("Customer follow-ups", v_customer),
-        ("Operations & paperwork", v_ops),
-        ("Team & internal process", v_team),
+        ("Operations & admin", v_ops),
+        ("Team handoffs", v_team),
     ]
 
     y = 62
@@ -760,64 +769,64 @@ def _parse_week_blocks(section5_lines: List[str]) -> List[Tuple[str, List[str]]]
 
 
 # --------------------------------------------------------------------
-# VALUE SECTIONS
+# VALUE SECTIONS (generic wording)
 # --------------------------------------------------------------------
 def _build_numbers_suggest(leads_n: Optional[int], jobs_n: Optional[int], rt: str) -> List[str]:
     out: List[str] = []
     if leads_n is not None and jobs_n is not None and leads_n > 0:
         close = int(round((jobs_n / leads_n) * 100))
-        out.append(f"Close rate looks strong (~{close}%).")
-        out.append(f"Workload is heavy: {jobs_n} jobs per week.")
+        out.append(f"Conversion looks solid (~{close}%).")
+        out.append(f"Workload is real: {jobs_n} jobs/orders weekly.")
     if rt and rt.lower().startswith(("immediate", "instant")):
-        out.append("Fast response helps you win more jobs.")
-    out.append("Best ROI: follow-ups, payroll, scheduling, paperwork.")
+        out.append("Fast replies usually win more customers.")
+    out.append("Best payoff: follow-ups, admin, scheduling, reporting.")
     return _shorten_list(out, max_items=5)
 
 
 def _build_replaces(sec2_lines: List[str]) -> List[str]:
     text = " ".join(sec2_lines).lower()
     out = []
-    if any(k in text for k in ["follow", "text", "email"]):
-        out.append("Manual texting, emailing, and chasing leads.")
-    if any(k in text for k in ["paperwork", "forms", "photos"]):
-        out.append("Paperwork, photos, and job notes stored everywhere.")
-    if any(k in text for k in ["payroll", "hours", "time"]):
-        out.append("Payroll prep and hours tracked manually.")
-    if any(k in text for k in ["schedule", "staff"]):
-        out.append("Scheduling handled by constant back-and-forth.")
+    if any(k in text for k in ["follow", "text", "email", "reply", "response"]):
+        out.append("Manual follow-ups that slip through cracks.")
+    if any(k in text for k in ["paperwork", "forms", "documents", "invoice"]):
+        out.append("Admin work spread across notes and tabs.")
+    if any(k in text for k in ["inventory", "orders", "fulfillment", "shipping"]):
+        out.append("Order handling that takes too much time.")
+    if any(k in text for k in ["schedule", "staff", "handoff"]):
+        out.append("Scheduling and handoffs done by texting.")
     if not out:
         out = [
-            "Manual follow-ups that slip through cracks.",
-            "Paperwork that delays jobs and payments.",
-            "Staff scheduling done by constant texting.",
+            "Manual follow-ups that get missed.",
+            "Admin work that wastes time daily.",
+            "Handoffs that cause delays and stress.",
         ]
     return _shorten_list(out, max_items=5)
 
 
 def _build_day_to_day() -> List[str]:
     out = [
-        "New lead triggers follow-ups until booked or closed.",
-        "You see pipeline, missed calls, and tasks daily.",
-        "Team gets schedules and reminders automatically.",
-        "Payroll prep is ready with approvals and alerts.",
-        "Weekly snapshot shows leads, jobs, and bottlenecks.",
+        "New people get a quick reply automatically.",
+        "Follow-ups run until booked or closed.",
+        "You see tasks and next steps in one place.",
+        "Handoffs are clear for you and your team.",
+        "Weekly snapshot shows what improved and what didn’t.",
     ]
     return _shorten_list(out, max_items=6)
 
 
 def _build_auto_vs_human() -> Tuple[List[str], List[str]]:
     automate = [
-        "Lead follow-ups, reminders, and no-show nudges.",
-        "Appointment confirmations and reschedule prompts.",
-        "Staff schedule notifications and shift reminders.",
-        "Payroll prep, time logs, and approval alerts.",
-        "Simple reporting: leads, jobs, response time.",
+        "Follow-ups, reminders, and simple check-ins.",
+        "New inquiry replies and quick next steps.",
+        "Basic admin tasks and status updates.",
+        "Scheduling and reschedule nudges.",
+        "Simple reporting: volume, speed, bottlenecks.",
     ]
     human = [
-        "Pricing, quoting, and final customer decisions.",
-        "Complex objections and special situations.",
-        "Quality control, training, and leadership.",
-        "High-value upsells and relationship building.",
+        "Pricing decisions and special situations.",
+        "Complex questions and exceptions.",
+        "Quality control and leadership.",
+        "High-value relationships and upsells.",
     ]
     return (_shorten_list(automate, 6), _shorten_list(human, 6))
 
@@ -829,10 +838,10 @@ def _cta_block(st) -> List[Any]:
     url = CALENDAR_URL
 
     title = _card_table(
-        "Want help implementing this?",
+        "Want help fixing this?",
         [
-            "If anything is unclear, let’s walk through it together.",
-            "We’ll confirm priorities and map a simple next-step plan.",
+            "If you want, we can walk through it together.",
+            "We’ll pick the best fixes and the next steps.",
         ],
         st,
         bg=st["CARD_BG_ALT"],
@@ -859,9 +868,9 @@ def _cta_block(st) -> List[Any]:
 
 
 # --------------------------------------------------------------------
-# PDF GENERATION (V13)
+# PDF GENERATION (Business Fix Plan)
 # --------------------------------------------------------------------
-def generate_pdf_v13(
+def generate_pdf_business_fix_plan(
     blueprint_text: str,
     pdf_path: str,
     lead_name: str,
@@ -877,7 +886,7 @@ def generate_pdf_v13(
     doc = SimpleDocTemplate(
         pdf_path,
         pagesize=letter,
-        title="AI Automation Blueprint",
+        title="Business Fix Plan",
         author="Apex Automation",
         leftMargin=38,
         rightMargin=38,
@@ -890,18 +899,18 @@ def generate_pdf_v13(
     # ------------------- COVER -------------------
     story.append(Spacer(1, 22))
     story.append(Paragraph(safe_p(business_name) if business_name else "Your Business", st["title"]))
-    story.append(Paragraph(safe_p(business_type) if business_type else "Service Business", st["subtitle"]))
+    story.append(Paragraph(safe_p(business_type) if business_type else "Business", st["subtitle"]))
 
     cover_lines = [
         f"Prepared for: {safe_p(lead_name) if lead_name else 'Business Owner'}",
         f"Team size: {safe_p(team_size) if team_size else 'Not specified'}",
-        f"Leads/week: {safe_p(leads_per_week) if leads_per_week else 'Not specified'}",
-        f"Jobs/week: {safe_p(jobs_per_week) if jobs_per_week else 'Not specified'}",
-        f"Response time: {safe_p(lead_response_time) if lead_response_time else 'Not specified'}",
+        f"New customers/leads per week: {safe_p(leads_per_week) if leads_per_week else 'Not specified'}",
+        f"Jobs/orders per week: {safe_p(jobs_per_week) if jobs_per_week else 'Not specified'}",
+        f"Reply speed: {safe_p(lead_response_time) if lead_response_time else 'Not specified'}",
     ]
     story.append(_card_table("Snapshot", cover_lines, st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False))
     story.append(Spacer(1, 6))
-    story.append(Paragraph("Where you’re leaking time + money, and the fastest wins to fix it.", st["body"]))
+    story.append(Paragraph("A simple plan to reduce stress and make things run smoother.", st["body"]))
 
     leads_n = parse_int(leads_per_week)
     jobs_n = parse_int(jobs_per_week)
@@ -910,11 +919,10 @@ def generate_pdf_v13(
     story.append(Spacer(1, 22))
     story.append(Paragraph("Workload Snapshot", st["h1"]))
     if leads_n is not None and jobs_n is not None:
-        # CHANGE #3: show values above bars on the COVER chart only
         story.append(
             _bar_chart(
-                "Leads per Week vs Jobs per Week",
-                ["Leads", "Jobs"],
+                "New Customers/Leads vs Jobs/Orders (per week)",
+                ["New customers/leads", "Jobs/orders"],
                 [leads_n, jobs_n],
                 st,
                 compact=True,
@@ -922,7 +930,7 @@ def generate_pdf_v13(
             )
         )
     else:
-        story.append(_card_table("At a glance", ["Add leads/week + jobs/week to unlock visuals."], st, bg=st["CARD_BG"], placeholder_if_empty=False))
+        story.append(_card_table("At a glance", ["Add weekly numbers to unlock visuals."], st, bg=st["CARD_BG"], placeholder_if_empty=False))
 
     story.append(PageBreak())
 
@@ -948,7 +956,7 @@ def generate_pdf_v13(
     _add_two_cards_page(story, doc, st, "Executive Summary (continued)", card_b1, card_b2)
 
     card_c1 = _card_table("Where time is being lost", time_lost, st, bg=st["CARD_BG"], extra_padding=2)
-    card_c2 = _card_table("Opportunities you’re not using yet", opps, st, bg=st["CARD_BG_ALT"], extra_padding=2)
+    card_c2 = _card_table("Simple wins you’re missing", opps, st, bg=st["CARD_BG_ALT"], extra_padding=2)
     _add_two_cards_page(story, doc, st, "Executive Summary (continued)", card_c1, card_c2)
 
     # ------------------- WORKING SYSTEM -------------------
@@ -958,24 +966,24 @@ def generate_pdf_v13(
 
     ws1 = _card_table("What this replaces", replaces, st, bg=st["CARD_BG"], extra_padding=2, placeholder_if_empty=False)
     ws2 = _card_table("What this looks like day-to-day", day2day, st, bg=st["CARD_BG_ALT"], extra_padding=2, placeholder_if_empty=False)
-    _add_two_cards_page(story, doc, st, "How this turns into a working system", ws1, ws2)
+    _add_two_cards_page(story, doc, st, "How this becomes a working system", ws1, ws2)
 
-    ws3 = _card_table("What we automate", auto_list, st, bg=st["CARD_BG"], extra_padding=2, placeholder_if_empty=False)
+    ws3 = _card_table("What gets handled for you", auto_list, st, bg=st["CARD_BG"], extra_padding=2, placeholder_if_empty=False)
     ws4 = _card_table("What stays human", human_list, st, bg=st["CARD_BG_ALT"], extra_padding=2, placeholder_if_empty=False)
-    _add_two_cards_page(story, doc, st, "How this turns into a working system (continued)", ws3, ws4)
+    _add_two_cards_page(story, doc, st, "How this becomes a working system (continued)", ws3, ws4)
 
     # ------------------- METRICS & VISUALS -------------------
     story.append(Paragraph("Key Metrics & Visuals", st["h1"]))
-    story.append(Paragraph("Generated from the numbers you submitted.", st["small"]))
+    story.append(Paragraph("Based on what you submitted.", st["small"]))
     story.append(Spacer(1, 6))
 
     if leads_n is not None and jobs_n is not None:
-        story.append(_bar_chart("Leads per Week vs Jobs per Week", ["Leads", "Jobs"], [leads_n, jobs_n], st))
+        story.append(_bar_chart("New Customers/Leads vs Jobs/Orders (per week)", ["New customers/leads", "Jobs/orders"], [leads_n, jobs_n], st))
         story.append(Spacer(1, 6))
 
     rt = clean_value(lead_response_time).lower()
     if rt:
-        labels = ["Immediate", "5m", "15m", "1h", "4h", "24h"]
+        labels = ["Now", "5m", "15m", "1h", "4h", "24h"]
         conv = [85, 75, 60, 45, 30, 15]
         if "immediate" in rt or "instant" in rt:
             conv = [90, 78, 62, 48, 32, 16]
@@ -983,19 +991,19 @@ def generate_pdf_v13(
             conv = [70, 65, 55, 45, 32, 18]
         elif "day" in rt or "24" in rt:
             conv = [55, 50, 40, 30, 20, 10]
-        story.append(_line_chart("Response Time vs Likely Conversion (estimated)", labels, conv, st))
+        story.append(_line_chart("Reply Speed vs Lost Customers (estimate)", labels, conv, st))
         story.append(Spacer(1, 6))
 
     story.append(_hours_saved_chart(leads_n, team_n, st))
     story.append(PageBreak())
 
     # ------------------- SECTION 3: FIXES -------------------
-    story.append(Paragraph("SECTION 3: Your Top 3 Automation Fixes", st["h1"]))
+    story.append(Paragraph("SECTION 3: Top 3 Fixes to Make Things Easier", st["h1"]))
     sec3_lines = _extract_section_lines(blueprint_text, 3)
     fixes = _parse_fixes(sec3_lines)
 
     if not fixes:
-        story.append(_card_table("Automation Fixes", ["(No fixes found in SECTION 3)"], st, bg=st["CARD_BG"]))
+        story.append(_card_table("Fixes", ["(No fixes found in SECTION 3)"], st, bg=st["CARD_BG"]))
         story.append(PageBreak())
     else:
         alt = True
@@ -1024,8 +1032,8 @@ def generate_pdf_v13(
             story.append(PageBreak())
             alt = not alt
 
-    # ------------------- SECTION 4: SCORECARD + GAUGE + NEW VISUAL -------------------
-    story.append(Paragraph("SECTION 4: Automation Scorecard", st["h1"]))
+    # ------------------- SECTION 4: SCORECARD + GAUGE + IMPROVEMENT AREAS -------------------
+    story.append(Paragraph("SECTION 4: Scorecard", st["h1"]))
     sec4_lines = _extract_section_lines(blueprint_text, 4)
     sec4_items = _shorten_list([_strip_bullet_prefix(x) for x in sec4_lines], max_items=12)
 
@@ -1042,7 +1050,6 @@ def generate_pdf_v13(
     story.append(_card_table("Scorecard (0–100)", sec4_items, st, bg=st["CARD_BG_ALT"]))
 
     if score_val is not None:
-        # CHANGE #2: 1-line interpretation under scorecard
         story.append(Spacer(1, 6))
         story.append(Paragraph(_score_interpretation(score_val), st["small"]))
 
@@ -1050,7 +1057,7 @@ def generate_pdf_v13(
         story.append(_score_gauge(score_val, st))
 
         story.append(Spacer(1, 10))
-        story.append(_opportunity_by_area(score_val, sec4_items, st))
+        story.append(_improvement_by_area(score_val, sec4_items, st))
 
     story.append(PageBreak())
 
@@ -1078,7 +1085,6 @@ def generate_pdf_v13(
         c3 = _card_table(w3[0], wk3, st, bg=st["CARD_BG_ALT"], week=True, extra_padding=8)
         c4 = _card_table(w4[0], wk4, st, bg=st["CARD_BG"], week=True, extra_padding=8)
 
-        # CHANGE #1: add header on Week 3/4 page
         _add_two_cards_page(story, doc, st, "SECTION 5: 30-Day Action Plan (continued)", c3, c4, gap_min=18, gap_max=52)
 
     # ------------------- SECTION 6 + CTA -------------------
@@ -1091,6 +1097,28 @@ def generate_pdf_v13(
     story.extend(_cta_block(st))
 
     doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
+
+
+# --------------------------------------------------------------------
+# OPTIONAL: Context lookup endpoints (handy for debugging / future)
+# --------------------------------------------------------------------
+@app.route("/context", methods=["GET"])
+def context_lookup_query():
+    phone = clean_value(request.args.get("phone"))
+    if not phone:
+        return jsonify({"success": False, "error": "missing phone query parameter"}), 400
+    ctx = get_context_for_phone(phone)
+    if not ctx:
+        return jsonify({"success": False, "error": "no context found"}), 404
+    return jsonify({"success": True, "context": ctx})
+
+
+@app.route("/context/<phone>", methods=["GET"])
+def context_lookup_path(phone: str):
+    ctx = get_context_for_phone(phone)
+    if not ctx:
+        return jsonify({"success": False, "error": "no context found"}), 404
+    return jsonify({"success": True, "context": ctx})
 
 
 # --------------------------------------------------------------------
@@ -1121,6 +1149,7 @@ def run_blueprint():
     phone_digits = normalize_phone(phone_raw)
     phone_e164 = to_e164(phone_digits)
 
+    # Keep your existing field keys intact (so FB/GHL mapping stays stable)
     business_name = clean_value(form_fields.get("business_name") or form_fields.get("Business Name"))
     business_type = clean_value(form_fields.get("business_type") or form_fields.get("Business Type"))
     services_offered = clean_value(form_fields.get("services_offered") or form_fields.get("Services You Offer"))
@@ -1171,31 +1200,32 @@ def run_blueprint():
     }
     raw_json = json.dumps(source_json, indent=2, ensure_ascii=False)
 
+    # Plain-language, all-business prompt
     prompt = f"""
-You are a senior automation consultant writing a professional client blueprint.
+You are a senior business systems consultant.
+You write clear, calm, simple plans that help business owners reduce stress and run smoother.
 
 STYLE RULES
-- Simple business language. No tech jargon.
+- Plain language. No tech jargon.
 - Speak to the owner as "you".
-- NO mention of AI, prompts, JSON, or generation.
-- BULLETS MUST BE SHORT: 8–10 words max per bullet.
-- 1 sentence per bullet. No long explanations.
-- Avoid filler words.
-- Keep it skimmable on a phone screen.
+- Do NOT mention AI, prompts, JSON, or that this was generated.
+- Bullets must be short: 8–10 words max.
+- One sentence per bullet.
+- Keep it skimmable.
 
 OWNER INFO
 - Owner name: {name}
 - Business name: {bn}
 - Business type: {bt}
-- Services you offer: {so}
-- Ideal customer: {ic}
-- Biggest bottlenecks: {bo}
-- Manual tasks to automate: {mt}
-- Current software: {cs}
-- Lead response time: {lrt}
-- Leads per week: {lpw}
-- Jobs per week: {jpw}
-- Growth goals: {gg}
+- What you sell/do: {so}
+- Main customers: {ic}
+- What feels hardest/stressful: {bo}
+- Tasks you wish were handled: {mt}
+- Tools you use now: {cs}
+- Reply speed: {lrt}
+- New customers/leads per week: {lpw}
+- Jobs/orders per week: {jpw}
+- Goals (6–12 months): {gg}
 - Biggest frustration: {fr}
 - Extra notes: {en}
 - Team size: {ts}
@@ -1203,7 +1233,7 @@ OWNER INFO
 SOURCE DATA (JSON)
 {raw_json}
 
-WRITE THE BLUEPRINT WITH THIS STRUCTURE:
+WRITE THE PLAN WITH THIS STRUCTURE:
 
 Prepared for: {name}
 Business: {bn}
@@ -1219,10 +1249,10 @@ Your Challenges:
 - 3–4 bullets.
 Where Time Is Being Lost:
 - 3–4 bullets.
-Opportunities You’re Not Using Yet:
+Simple Wins You’re Missing:
 - 3–5 bullets.
 
-SECTION 3: Your Top 3 Automation Fixes
+SECTION 3: Top 3 Fixes to Make Things Easier
 FIX 1 – Title:
 What This Fixes:
 - 2–3 bullets.
@@ -1235,7 +1265,7 @@ FIX 2 – Title:
 FIX 3 – Title:
 (same structure)
 
-SECTION 4: Your Automation Scorecard (0–100)
+SECTION 4: Your Scorecard (0–100)
 - Include: "Score: __"
 - 4–6 bullets.
 
@@ -1271,10 +1301,10 @@ SECTION 6: Final Recommendations
             summary_section = blueprint_text.split(marker, 1)[0].strip()
 
         pdf_id = uuid.uuid4().hex
-        pdf_filename = f"blueprint_{pdf_id}.pdf"
+        pdf_filename = f"business_fix_plan_{pdf_id}.pdf"
         pdf_path = os.path.join("/tmp", pdf_filename)
 
-        generate_pdf_v13(
+        generate_pdf_business_fix_plan(
             blueprint_text=blueprint_text,
             pdf_path=pdf_path,
             lead_name=name,
@@ -1308,6 +1338,9 @@ SECTION 6: Final Recommendations
             "summary": summary_section,
             "pdf_url": pdf_url,
         }
+
+        if phone_raw:
+            store_context_for_phone(phone_raw, context_blob)
 
         return jsonify(
             {
