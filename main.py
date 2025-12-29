@@ -273,12 +273,13 @@ def _brand_styles():
         alignment=TA_LEFT,
     )
 
+    # Bigger CTA button text for easier tapping (PDF)
     cta_btn = ParagraphStyle(
         "CtaBtn",
         parent=styles["BodyText"],
         fontName="Helvetica-Bold",
-        fontSize=14,
-        leading=16,
+        fontSize=18,
+        leading=20,
         alignment=TA_CENTER,
         textColor=WHITE,
     )
@@ -599,9 +600,6 @@ def _score_gauge(score: int, st) -> Drawing:
 
 
 def _improvement_by_area(score: int, scorecard_items: List[str], st) -> Drawing:
-    """
-    Replaces 'Automation Opportunity by Area' with neutral language.
-    """
     score = max(0, min(100, int(score)))
     opportunity = max(10, 100 - score)
 
@@ -772,20 +770,38 @@ def _parse_week_blocks(section5_lines: List[str]) -> List[Tuple[str, List[str]]]
 # VALUE SECTIONS (generic wording)
 # --------------------------------------------------------------------
 def _build_numbers_suggest(leads_n: Optional[int], jobs_n: Optional[int], rt: str) -> List[str]:
+    """
+    Fixes the >100% "conversion" issue for repeat-customer businesses.
+    - If jobs/orders > new customers/leads: show "repeat activity" instead.
+    - Else: show conversion.
+    """
     out: List[str] = []
+
     if leads_n is not None and jobs_n is not None and leads_n > 0:
-        close = int(round((jobs_n / leads_n) * 100))
-        out.append(f"Conversion looks solid (~{close}%).")
+        if jobs_n <= leads_n:
+            conv = int(round((jobs_n / leads_n) * 100))
+            conv = max(0, min(100, conv))
+            out.append(f"Conversion looks solid (~{conv}%).")
+        else:
+            ratio = jobs_n / float(leads_n)
+            out.append(f"Repeat activity looks strong (~{ratio:.1f} jobs/orders per new customer).")
+
         out.append(f"Workload is real: {jobs_n} jobs/orders weekly.")
+
     if rt and rt.lower().startswith(("immediate", "instant")):
         out.append("Fast replies usually win more customers.")
+
     out.append("Best payoff: follow-ups, admin, scheduling, reporting.")
     return _shorten_list(out, max_items=5)
 
 
 def _build_replaces(sec2_lines: List[str]) -> List[str]:
+    """
+    Always returns 3–5 bullets so the card never looks empty.
+    """
     text = " ".join(sec2_lines).lower()
-    out = []
+    out: List[str] = []
+
     if any(k in text for k in ["follow", "text", "email", "reply", "response"]):
         out.append("Manual follow-ups that slip through cracks.")
     if any(k in text for k in ["paperwork", "forms", "documents", "invoice"]):
@@ -794,12 +810,22 @@ def _build_replaces(sec2_lines: List[str]) -> List[str]:
         out.append("Order handling that takes too much time.")
     if any(k in text for k in ["schedule", "staff", "handoff"]):
         out.append("Scheduling and handoffs done by texting.")
-    if not out:
-        out = [
-            "Manual follow-ups that get missed.",
-            "Admin work that wastes time daily.",
-            "Handoffs that cause delays and stress.",
-        ]
+
+    # Pad to at least 3 bullets (no duplicates)
+    fallbacks = [
+        "Missed messages and slow replies to customers.",
+        "Tasks living in your head all day.",
+        "No clean system for handoffs and follow-through.",
+        "Reports that take too long to pull together.",
+        "Admin work done the hard way.",
+    ]
+    for fb in fallbacks:
+        if len(out) >= 3:
+            break
+        if fb not in out:
+            out.append(fb)
+
+    # Cap at 5 for clean layout
     return _shorten_list(out, max_items=5)
 
 
@@ -834,37 +860,47 @@ def _build_auto_vs_human() -> Tuple[List[str], List[str]]:
 def _cta_block(st) -> List[Any]:
     """
     CTA with a real clickable "button" (no visible URL).
+    Bigger + easier to press.
     """
     url = CALENDAR_URL
 
     title = _card_table(
         "Want help fixing this?",
         [
-            "If you want, we can walk through it together.",
-            "We’ll pick the best fixes and the next steps.",
+            "If you want, we can review your plan together.",
+            "We’ll pick the best fixes and next steps.",
         ],
         st,
         bg=st["CARD_BG_ALT"],
         placeholder_if_empty=False,
     )
 
-    btn_text = f'<link href="{safe_p(url)}" color="white"><b>Book a walkthrough call →</b></link>'
-    btn = Table([[Paragraph(btn_text, st["cta_btn"])]], colWidths=[7.44 * inch], hAlign="LEFT")
+    # Requested button label
+    btn_text = f'<link href="{safe_p(url)}" color="white"><b>Book Business Fix Call →</b></link>'
+
+    # Make the button visually larger: taller row + more padding
+    btn = Table(
+        [[Paragraph(btn_text, st["cta_btn"])]],
+        colWidths=[7.44 * inch],
+        rowHeights=[0.70 * inch],  # big tap target
+        hAlign="LEFT",
+    )
     btn.setStyle(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, -1), st["BLUE_DK"]),
                 ("BOX", (0, 0), (-1, -1), 1, st["BLUE_DK"]),
-                ("TOPPADDING", (0, 0), (-1, -1), 12),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
+                ("TOPPADDING", (0, 0), (-1, -1), 18),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 18),
                 ("LEFTPADDING", (0, 0), (-1, -1), 14),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 14),
                 ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ]
         )
     )
 
-    return [KeepTogether([title, Spacer(1, 10), btn])]
+    return [KeepTogether([title, Spacer(1, 12), btn])]
 
 
 # --------------------------------------------------------------------
@@ -930,7 +966,15 @@ def generate_pdf_business_fix_plan(
             )
         )
     else:
-        story.append(_card_table("At a glance", ["Add weekly numbers to unlock visuals."], st, bg=st["CARD_BG"], placeholder_if_empty=False))
+        story.append(
+            _card_table(
+                "At a glance",
+                ["Add weekly numbers to unlock visuals."],
+                st,
+                bg=st["CARD_BG"],
+                placeholder_if_empty=False,
+            )
+        )
 
     story.append(PageBreak())
 
@@ -952,7 +996,14 @@ def generate_pdf_business_fix_plan(
     _add_two_cards_page(story, doc, st, "Executive Summary", card_a1, card_a2)
 
     card_b1 = _card_table("Your Challenges", challenges, st, bg=st["CARD_BG"], extra_padding=2)
-    card_b2 = _card_table("What the numbers suggest", numbers_suggest, st, bg=st["CARD_BG_ALT"], extra_padding=2, placeholder_if_empty=False)
+    card_b2 = _card_table(
+        "What the numbers suggest",
+        numbers_suggest,
+        st,
+        bg=st["CARD_BG_ALT"],
+        extra_padding=2,
+        placeholder_if_empty=False,
+    )
     _add_two_cards_page(story, doc, st, "Executive Summary (continued)", card_b1, card_b2)
 
     card_c1 = _card_table("Where time is being lost", time_lost, st, bg=st["CARD_BG"], extra_padding=2)
@@ -965,7 +1016,14 @@ def generate_pdf_business_fix_plan(
     auto_list, human_list = _build_auto_vs_human()
 
     ws1 = _card_table("What this replaces", replaces, st, bg=st["CARD_BG"], extra_padding=2, placeholder_if_empty=False)
-    ws2 = _card_table("What this looks like day-to-day", day2day, st, bg=st["CARD_BG_ALT"], extra_padding=2, placeholder_if_empty=False)
+    ws2 = _card_table(
+        "What this looks like day-to-day",
+        day2day,
+        st,
+        bg=st["CARD_BG_ALT"],
+        extra_padding=2,
+        placeholder_if_empty=False,
+    )
     _add_two_cards_page(story, doc, st, "How this becomes a working system", ws1, ws2)
 
     ws3 = _card_table("What gets handled for you", auto_list, st, bg=st["CARD_BG"], extra_padding=2, placeholder_if_empty=False)
@@ -978,7 +1036,14 @@ def generate_pdf_business_fix_plan(
     story.append(Spacer(1, 6))
 
     if leads_n is not None and jobs_n is not None:
-        story.append(_bar_chart("New Customers/Leads vs Jobs/Orders (per week)", ["New customers/leads", "Jobs/orders"], [leads_n, jobs_n], st))
+        story.append(
+            _bar_chart(
+                "New Customers/Leads vs Jobs/Orders (per week)",
+                ["New customers/leads", "Jobs/orders"],
+                [leads_n, jobs_n],
+                st,
+            )
+        )
         story.append(Spacer(1, 6))
 
     rt = clean_value(lead_response_time).lower()
@@ -991,7 +1056,9 @@ def generate_pdf_business_fix_plan(
             conv = [70, 65, 55, 45, 32, 18]
         elif "day" in rt or "24" in rt:
             conv = [55, 50, 40, 30, 20, 10]
-        story.append(_line_chart("Reply Speed vs Lost Customers (estimate)", labels, conv, st))
+
+        # Safer wording than "Lost Customers"
+        story.append(_line_chart("Reply Speed vs Likely Bookings (estimate)", labels, conv, st))
         story.append(Spacer(1, 6))
 
     story.append(_hours_saved_chart(leads_n, team_n, st))
@@ -1154,7 +1221,6 @@ def run_blueprint():
     business_name = clean_value(form_fields.get("business_name") or form_fields.get("Business Name"))
     business_type = clean_value(form_fields.get("business_type") or form_fields.get("Business Type"))
 
-    # CHANGE #1: services_offered now supports "What do you sell or do?"
     services_offered = clean_value(
         form_fields.get("services_offered")
         or form_fields.get("Services You Offer")
@@ -1163,7 +1229,6 @@ def run_blueprint():
         or form_fields.get("What do you do?")
     )
 
-    # CHANGE #2: ideal_customer now supports customers/clients wording
     ideal_customer = clean_value(
         form_fields.get("ideal_customer")
         or form_fields.get("Ideal Customer")
@@ -1177,7 +1242,6 @@ def run_blueprint():
     current_software = clean_value(form_fields.get("current_software") or form_fields.get("Software You Currently Use"))
     lead_response_time = clean_value(form_fields.get("lead_response_time") or form_fields.get("Average Lead Response Time"))
 
-    # CHANGE #3: leads_per_week now supports "New customers/leads per week"
     leads_per_week = clean_value(
         form_fields.get("leads_per_week")
         or form_fields.get("Leads Per Week")
@@ -1186,7 +1250,6 @@ def run_blueprint():
         or form_fields.get("New customers per week")
     )
 
-    # CHANGE #4: jobs_per_week now supports jobs/orders wording
     jobs_per_week = clean_value(
         form_fields.get("jobs_per_week")
         or form_fields.get("Jobs Per Week")
@@ -1200,6 +1263,7 @@ def run_blueprint():
         or form_fields.get("growth_goals_6_12_months")
         or form_fields.get("Growth Goals (6–12 months)")
     )
+
     frustrations = clean_value(form_fields.get("frustrations") or form_fields.get("What Frustrates You Most"))
     extra_notes = clean_value(form_fields.get("extra_notes") or form_fields.get("Anything Else We Should Know"))
     team_size = clean_value(
@@ -1235,7 +1299,7 @@ def run_blueprint():
     }
     raw_json = json.dumps(source_json, indent=2, ensure_ascii=False)
 
-    # Plain-language, all-business prompt
+    # Plain-language, all-business prompt (with guardrails)
     prompt = f"""
 You are a senior business systems consultant.
 You write clear, calm, simple plans that help business owners reduce stress and run smoother.
@@ -1244,6 +1308,8 @@ STYLE RULES
 - Plain language. No tech jargon.
 - Speak to the owner as "you".
 - Do NOT mention AI, prompts, JSON, or that this was generated.
+- Do NOT assume demographics (gender, age, income, etc.).
+- Avoid "replace X" unless truly necessary; prefer simplify/cleanup first.
 - Bullets must be short: 8–10 words max.
 - One sentence per bullet.
 - Keep it skimmable.
