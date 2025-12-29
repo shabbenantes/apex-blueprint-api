@@ -1149,17 +1149,52 @@ def run_blueprint():
     phone_digits = normalize_phone(phone_raw)
     phone_e164 = to_e164(phone_digits)
 
-    # Keep your existing field keys intact (so FB/GHL mapping stays stable)
+    # Keep your existing field keys intact (so FB/GHL mapping stays stable),
+    # BUT ALSO accept the new plain-language question labels (Facebook often sends labels as keys).
     business_name = clean_value(form_fields.get("business_name") or form_fields.get("Business Name"))
     business_type = clean_value(form_fields.get("business_type") or form_fields.get("Business Type"))
-    services_offered = clean_value(form_fields.get("services_offered") or form_fields.get("Services You Offer"))
-    ideal_customer = clean_value(form_fields.get("ideal_customer") or form_fields.get("Ideal Customer"))
+
+    # CHANGE #1: services_offered now supports "What do you sell or do?"
+    services_offered = clean_value(
+        form_fields.get("services_offered")
+        or form_fields.get("Services You Offer")
+        or form_fields.get("What do you sell or do?")
+        or form_fields.get("What do you sell/do?")
+        or form_fields.get("What do you do?")
+    )
+
+    # CHANGE #2: ideal_customer now supports customers/clients wording
+    ideal_customer = clean_value(
+        form_fields.get("ideal_customer")
+        or form_fields.get("Ideal Customer")
+        or form_fields.get("Who do you want as customers/clients?")
+        or form_fields.get("Who is your best customer/client?")
+        or form_fields.get("Who is your ideal customer/client?")
+    )
+
     bottlenecks = clean_value(form_fields.get("bottlenecks") or form_fields.get("Biggest Operational Bottlenecks"))
     manual_tasks = clean_value(form_fields.get("manual_tasks") or form_fields.get("Manual Tasks You Want Automated"))
     current_software = clean_value(form_fields.get("current_software") or form_fields.get("Software You Currently Use"))
     lead_response_time = clean_value(form_fields.get("lead_response_time") or form_fields.get("Average Lead Response Time"))
-    leads_per_week = clean_value(form_fields.get("leads_per_week") or form_fields.get("Leads Per Week"))
-    jobs_per_week = clean_value(form_fields.get("jobs_per_week") or form_fields.get("Jobs Per Week"))
+
+    # CHANGE #3: leads_per_week now supports "New customers/leads per week"
+    leads_per_week = clean_value(
+        form_fields.get("leads_per_week")
+        or form_fields.get("Leads Per Week")
+        or form_fields.get("New customers/leads per week")
+        or form_fields.get("New Customers/Leads Per Week")
+        or form_fields.get("New customers per week")
+    )
+
+    # CHANGE #4: jobs_per_week now supports jobs/orders wording
+    jobs_per_week = clean_value(
+        form_fields.get("jobs_per_week")
+        or form_fields.get("Jobs Per Week")
+        or form_fields.get("Jobs/orders per week")
+        or form_fields.get("Jobs/Orders Per Week")
+        or form_fields.get("Orders Per Week")
+    )
+
     growth_goals = clean_value(
         form_fields.get("growth_goals")
         or form_fields.get("growth_goals_6_12_months")
@@ -1218,7 +1253,7 @@ OWNER INFO
 - Business name: {bn}
 - Business type: {bt}
 - What you sell/do: {so}
-- Main customers: {ic}
+- Main customers/clients: {ic}
 - What feels hardest/stressful: {bo}
 - Tasks you wish were handled: {mt}
 - Tools you use now: {cs}
