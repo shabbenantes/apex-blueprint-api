@@ -209,12 +209,14 @@ def _parse_range_or_number(s: str) -> Optional[float]:
         return None
 
     t = s.lower().replace(",", " ")
-    t = t.replace("–", "-").replace("—", "-").replace("to", "-")
+    t = t.replace("–", "-").replace("—", "-")
+    t = re.sub(r"\bto\b", "-", t)
 
     nums = re.findall(r"(\d+(?:\.\d+)?)", t)
     if not nums:
         return None
 
+    # If there are 2+ numbers and a range-like pattern exists, average first two
     if re.search(r"\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?", t) and len(nums) >= 2:
         a = float(nums[0])
         b = float(nums[1])
@@ -261,10 +263,6 @@ def _weekly_multiplier_from_text(s: str) -> float:
 def parse_volume_to_weekly(raw: str) -> Tuple[Optional[int], str]:
     """
     Converts user input into weekly integer for charts, with a normalized display string.
-    Examples:
-      "about 700 orders per week" -> (700, "≈700/week")
-      "10 orders per day" -> (70, "10/day → ≈70/week")
-      "10 to 15 per week" -> (13, "≈13/week")
     """
     s = clean_value(raw)
     if not s:
@@ -279,7 +277,7 @@ def parse_volume_to_weekly(raw: str) -> Tuple[Optional[int], str]:
 
     base = f"{int(round(n))}" if n >= 1 else f"{n:.1f}"
     if mult == 1.0:
-        return max(0, weekly), f"≈{weekly}/week" if str(weekly) not in s else f"{weekly}/week"
+        return max(0, weekly), f"{weekly}/week" if str(weekly) in s else f"≈{weekly}/week"
     if mult == 7.0:
         return max(0, weekly), f"{base}/day → ≈{weekly}/week"
     if mult == 5.0:
@@ -405,49 +403,46 @@ def _pick_and_rank_fixes(services: str, stress: str, remember: str) -> List[dict
     return ranked[:3]
 
 
-# --------------------------------------------------------------------
-# “FOLLOW-UP RISK” (replaces vague score)
-# --------------------------------------------------------------------
-def _followup_risk_score(stress: str, remember: str, leads_weekly: Optional[int], jobs_weekly: Optional[int]) -> int:
+def _estimate_score(stress: str, remember: str, leads_weekly: Optional[int], jobs_weekly: Optional[int]) -> int:
     """
-    0–100 where higher = higher risk things slip.
-    Explains itself: volume + language signals.
+    Follow-up risk score (0–100). Higher = more likely things slip.
     """
-    risk = 28  # baseline
+    risk = 35
+    text = " ".join([stress or "", remember or ""]).lower()
 
-    txt = (" ".join([stress or "", remember or ""])).lower()
-    risk_words = [
-        "miss", "missed", "forgot", "forget", "overwhelm", "overwhelmed",
-        "behind", "stress", "chaos", "dropped", "drop", "late", "no-show", "noshow"
+    chaos_words = [
+        "miss", "missed", "forgot", "forget",
+        "overwhelm", "overwhelmed", "behind", "stress",
+        "mess", "chaos", "dropped", "drop"
     ]
-    for w in risk_words:
-        if w in txt:
+    for w in chaos_words:
+        if w in text:
             risk += 6
 
-    # Volume adds risk
     if leads_weekly is not None:
         if leads_weekly >= 50:
             risk += 18
         elif leads_weekly >= 20:
             risk += 10
         elif leads_weekly >= 10:
-            risk += 5
+            risk += 6
+    else:
+        risk += 6
 
     if jobs_weekly is not None:
         if jobs_weekly >= 50:
-            risk += 12
+            risk += 14
         elif jobs_weekly >= 20:
-            risk += 7
+            risk += 8
         elif jobs_weekly >= 10:
-            risk += 4
-
-    # If missing volumes, small penalty (uncertainty)
-    if leads_weekly is None:
-        risk += 6
-    if jobs_weekly is None:
+            risk += 5
+    else:
         risk += 6
 
-    return max(5, min(95, int(risk)))
+    if any(k in text for k in ["schedule", "booking", "no-show", "calendar", "appointment"]):
+        risk += 6
+
+    return max(10, min(95, int(risk)))
 
 
 # --------------------------------------------------------------------
@@ -481,7 +476,11 @@ def _build_improve_list(stress: str, remember: str) -> List[str]:
     else:
         out.append("Clear next steps")
 
-    # Dedup keep order
+    # Ensure at least 3 (fills page better + reads better)
+    if len(out) < 3:
+        out.append("Clear next steps")
+
+    # Dedup
     seen = set()
     cleaned = []
     for x in out:
@@ -489,7 +488,16 @@ def _build_improve_list(stress: str, remember: str) -> List[str]:
             cleaned.append(x)
             seen.add(x)
 
-    return cleaned[:4] if cleaned else ["Faster replies", "Consistent follow-up", "Clear next steps"]
+    # Fill to 3 if it came out short
+    while len(cleaned) < 3:
+        if "Clear next steps" not in cleaned:
+            cleaned.append("Clear next steps")
+        elif "No missed messages" not in cleaned:
+            cleaned.append("No missed messages")
+        else:
+            break
+
+    return cleaned[:4]
 
 
 # --------------------------------------------------------------------
@@ -513,30 +521,30 @@ def _brand_styles():
         "ApexTitle",
         parent=styles["Title"],
         fontName="Helvetica-Bold",
-        fontSize=34,
-        leading=38,
+        fontSize=32,   # slightly smaller to make room for charts
+        leading=36,
         alignment=TA_CENTER,
         textColor=NAVY,
-        spaceAfter=6,
+        spaceAfter=4,
     )
 
     subtitle = ParagraphStyle(
         "ApexSubtitle",
         parent=styles["Heading2"],
         fontName="Helvetica",
-        fontSize=16,
-        leading=20,
+        fontSize=14,
+        leading=18,
         alignment=TA_CENTER,
         textColor=MUTED,
-        spaceAfter=10,
+        spaceAfter=6,
     )
 
     h1 = ParagraphStyle(
         "ApexH1",
         parent=styles["Heading2"],
         fontName="Helvetica-Bold",
-        fontSize=20,
-        leading=24,
+        fontSize=18,
+        leading=22,
         textColor=NAVY,
         spaceBefore=6,
         spaceAfter=6,
@@ -557,8 +565,8 @@ def _brand_styles():
         "ApexBody",
         parent=styles["BodyText"],
         fontName="Helvetica",
-        fontSize=15,
-        leading=20,
+        fontSize=14,
+        leading=18,
         textColor=colors.HexColor("#111827"),
         spaceAfter=2,
     )
@@ -567,8 +575,8 @@ def _brand_styles():
         "ApexSmall",
         parent=styles["BodyText"],
         fontName="Helvetica",
-        fontSize=12,
-        leading=16,
+        fontSize=11,
+        leading=14,
         textColor=MUTED,
         spaceAfter=3,
     )
@@ -583,13 +591,12 @@ def _brand_styles():
         alignment=TA_LEFT,
     )
 
-    # Bigger CTA button text (more dominant)
     cta_btn = ParagraphStyle(
         "CtaBtn",
         parent=styles["BodyText"],
         fontName="Helvetica-Bold",
-        fontSize=26,
-        leading=28,
+        fontSize=22,   # bigger button text
+        leading=24,
         alignment=TA_CENTER,
         textColor=WHITE,
     )
@@ -674,8 +681,8 @@ def _card_table(
                 ("LINEBEFORE", (0, 0), (0, -1), 4, st["BLUE"]),
                 ("LEFTPADDING", (0, 0), (-1, -1), 14),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 14),
-                ("TOPPADDING", (0, 0), (-1, -1), 12 + extra_padding),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 12 + extra_padding),
+                ("TOPPADDING", (0, 0), (-1, -1), 10 + extra_padding),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 10 + extra_padding),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ]
         )
@@ -700,17 +707,19 @@ def _fix_header_bar(title: str, st) -> Table:
     return tbl
 
 
-def _bar_chart(title: str, labels: List[str], values: List[int], st, compact: bool = False) -> Drawing:
-    height = 155 if compact else 190
-    plot_h = 85 if compact else 110
-    top_y = height - 18
+def _bar_chart(title: str, labels: List[str], values: List[int], st, height: int = 120) -> Drawing:
+    """
+    Compact bar chart that fits on the cover (we use height=120).
+    """
+    height = int(height)
+    plot_h = max(55, height - 55)
 
     d = Drawing(460, height)
-    d.add(String(0, top_y, title, fontName="Helvetica-Bold", fontSize=12, fillColor=st["NAVY"]))
+    d.add(String(0, height - 14, title, fontName="Helvetica-Bold", fontSize=11, fillColor=st["NAVY"]))
 
     bc = VerticalBarChart()
     bc.x = 40
-    bc.y = 28
+    bc.y = 18
     bc.width = 380
     bc.height = plot_h
     bc.data = [values]
@@ -720,7 +729,7 @@ def _bar_chart(title: str, labels: List[str], values: List[int], st, compact: bo
 
     bc.categoryAxis.categoryNames = labels
     bc.categoryAxis.labels.fontName = "Helvetica"
-    bc.categoryAxis.labels.fontSize = 9
+    bc.categoryAxis.labels.fontSize = 8
     bc.categoryAxis.labels.fillColor = st["MUTED"]
 
     vmax = max(values + [10])
@@ -728,59 +737,60 @@ def _bar_chart(title: str, labels: List[str], values: List[int], st, compact: bo
     bc.valueAxis.valueMax = int(vmax * 1.25) if vmax > 0 else 10
     bc.valueAxis.valueStep = max(1, int(bc.valueAxis.valueMax / 5))
     bc.valueAxis.labels.fontName = "Helvetica"
-    bc.valueAxis.labels.fontSize = 9
+    bc.valueAxis.labels.fontSize = 8
     bc.valueAxis.labels.fillColor = st["MUTED"]
 
     d.add(bc)
     return d
 
 
-def _admin_time_chart(leads_weekly: int, jobs_weekly: int, st) -> Drawing:
+def _estimate_admin_hours(leads_weekly: int, jobs_weekly: int) -> Dict[str, int]:
     """
-    2nd chart for cover page. Very readable for owners.
-    Estimates admin time spent per week (hours).
+    Simple + believable estimate in HOURS/WEEK.
+    Keeps it understandable and stable.
     """
-    # Simple assumptions (kept stable + not “data science”):
-    # replying: ~3 min per lead/message
-    # scheduling/admin: ~4 min per job
-    # follow-up: ~2 min per job
-    reply_h = max(0.0, (leads_weekly * 3.0) / 60.0)
-    sched_h = max(0.0, (jobs_weekly * 4.0) / 60.0)
-    follow_h = max(0.0, (jobs_weekly * 2.0) / 60.0)
+    leads_weekly = max(0, int(leads_weekly))
+    jobs_weekly = max(0, int(jobs_weekly))
 
-    vals = [int(round(reply_h)), int(round(sched_h)), int(round(follow_h))]
-    return _bar_chart(
-        "Estimated admin time (hours per week)",
-        ["Replying", "Scheduling", "Follow-up"],
-        vals,
-        st,
-        compact=True,
-    )
+    # Rough averages:
+    # - replying: ~4 min per lead/message
+    # - scheduling: ~6 min per job (setting up, reschedule, reminders)
+    # - follow-up: ~3 min per job (check-ins, review ask, etc.)
+    replying = (leads_weekly * 4) / 60.0
+    scheduling = (jobs_weekly * 6) / 60.0
+    follow_up = (jobs_weekly * 3) / 60.0
+
+    return {
+        "Replying": int(round(replying)),
+        "Scheduling": int(round(scheduling)),
+        "Follow-up": int(round(follow_up)),
+    }
 
 
-def _risk_gauge(risk: int, st) -> Drawing:
-    risk = max(0, min(100, int(risk)))
+def _score_gauge(score: int, st) -> Drawing:
+    score = max(0, min(100, int(score)))
     w = 460
-    h = 78
+    h = 70
     pad_x = 10
-    bar_y = 28
-    bar_h = 16
+    bar_y = 24
+    bar_h = 14
     bar_w = w - (pad_x * 2)
 
     d = Drawing(w, h)
-    d.add(String(0, 58, "Follow-Up Risk Score (0–100)", fontName="Helvetica-Bold", fontSize=12, fillColor=st["NAVY"]))
+    d.add(String(0, 52, "Follow-Up Risk Score (0–100)", fontName="Helvetica-Bold", fontSize=12, fillColor=st["NAVY"]))
+
+    # Low/Med/High markers
+    d.add(String(pad_x, 8, "low", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
+    d.add(String(pad_x + int(bar_w / 2) - 10, 8, "medium", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
+    d.add(String(pad_x + bar_w - 18, 8, "high", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
+
     d.add(Rect(pad_x, bar_y, bar_w, bar_h, strokeColor=st["BORDER"], fillColor=st["SOFT"], strokeWidth=1))
-
-    fill_w = int(bar_w * (risk / 100.0))
+    fill_w = int(bar_w * (score / 100.0))
     d.add(Rect(pad_x, bar_y, fill_w, bar_h, strokeColor=None, fillColor=st["BLUE"]))
-
-    d.add(String(pad_x, 10, "low", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
-    d.add(String(pad_x + int(bar_w / 2) - 10, 10, "medium", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
-    d.add(String(pad_x + bar_w - 20, 10, "high", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
 
     label_x = pad_x + fill_w
     label_x = max(pad_x + 18, min(pad_x + bar_w - 18, label_x))
-    d.add(String(label_x - 14, 46, f"{risk}", fontName="Helvetica-Bold", fontSize=11, fillColor=st["NAVY"]))
+    d.add(String(label_x - 10, 42, f"{score}", fontName="Helvetica-Bold", fontSize=12, fillColor=st["NAVY"]))
     return d
 
 
@@ -789,15 +799,22 @@ def _what_i_help_with_block(st) -> Table:
         "I help you reply fast to new people.",
         "I help you follow up without forgetting.",
         "I help make booking feel simple.",
+        "I help reduce no-shows with reminders.",
         "I help with simple after-job check-ins.",
     ]
     return _card_table("What I can help with", bullets, st, bg=st["CARD_BG"], placeholder_if_empty=False)
 
 
-def _big_cta_block(st) -> List[Any]:
-    """
-    Bigger CTA so it’s not “hidden”.
-    """
+def _next_step_block(st) -> Table:
+    bullets = [
+        "Pick one goal for the next 30 days.",
+        "Fix the first step first.",
+        "Then stack the next step on top.",
+    ]
+    return _card_table("What to do next", bullets, st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False)
+
+
+def _cta_block(st) -> List[Any]:
     url = CALENDAR_URL
 
     title = _card_table(
@@ -809,15 +826,15 @@ def _big_cta_block(st) -> List[Any]:
         st,
         bg=st["CARD_BG_ALT"],
         placeholder_if_empty=False,
-        extra_padding=2,
     )
 
     btn_text = f'<link href="{safe_p(url)}" color="white"><b>Book a quick call →</b></link>'
 
+    # Bigger, more obvious button
     btn = Table(
         [[Paragraph(btn_text, st["cta_btn"])]],
         colWidths=[7.44 * inch],
-        rowHeights=[1.15 * inch],
+        rowHeights=[0.95 * inch],
         hAlign="LEFT",
     )
     btn.setStyle(
@@ -825,8 +842,8 @@ def _big_cta_block(st) -> List[Any]:
             [
                 ("BACKGROUND", (0, 0), (-1, -1), st["BLUE_DK"]),
                 ("BOX", (0, 0), (-1, -1), 1, st["BLUE_DK"]),
-                ("TOPPADDING", (0, 0), (-1, -1), 26),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 26),
+                ("TOPPADDING", (0, 0), (-1, -1), 22),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 22),
                 ("LEFTPADDING", (0, 0), (-1, -1), 14),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 14),
                 ("ALIGN", (0, 0), (-1, -1), "CENTER"),
@@ -841,31 +858,39 @@ def _big_cta_block(st) -> List[Any]:
 # --------------------------------------------------------------------
 # BLUEPRINT CONTENT (DIAGNOSE, THEN LEAD TO YOUR OFFER)
 # --------------------------------------------------------------------
-def _diagnosis_summary(services: str, stress: str, remember: str) -> List[str]:
+def _diagnosis_summary(services: str, stress: str, remember: str, leads_weekly: Optional[int], jobs_weekly: Optional[int]) -> List[str]:
     out: List[str] = []
-    if services:
-        out.append(f"You do: {services}")
+
+    if leads_weekly is not None:
+        out.append(f"You get about {leads_weekly} messages each week.")
+    if jobs_weekly is not None:
+        out.append(f"You handle about {jobs_weekly} jobs each week.")
+
     if stress:
-        out.append("The hardest part feels heavy.")
+        out.append("The hardest part feels heavy right now.")
     if remember:
         out.append("Too much is living in your head.")
+
     out.append("When messages slip, money slips.")
-    out.append("A simple system can feel calm.")
+    out.append("A simple system can make things calm.")
+
     return _shorten_list(out, 6, max_words=12)
 
 
 def _what_you_told_me(services: str, stress: str, remember: str, leads_norm: str, jobs_norm: str) -> List[str]:
     out: List[str] = []
     if services:
-        out.append(f"You do: {services}")
+        out.append(f"What you do: {services}")
     if stress:
-        out.append(f"Hardest right now: {stress}")
+        out.append(f"Biggest issue: {stress}")
     if remember:
-        out.append(f"Always tracking: {remember}")
+        out.append(f"What you’re trying to remember: {remember}")
+
     if leads_norm:
-        out.append(f"New messages: {leads_norm}")
+        out.append(f"New leads/messages: {leads_norm}")
     if jobs_norm:
-        out.append(f"Work volume: {jobs_norm}")
+        out.append(f"Jobs/orders: {jobs_norm}")
+
     if not out:
         out = ["You want fewer missed things.", "You want a clear next step."]
     return _shorten_list(out, 6, max_words=12)
@@ -876,22 +901,22 @@ def _plan_30_days_aligned() -> Dict[str, List[str]]:
         "week_1": [
             "Get all new messages in one place.",
             "Send a fast first reply every time.",
-            "Stop leads from slipping.",
+            "Stop leads from slipping through cracks.",
         ],
         "week_2": [
             "Make follow-up automatic and simple.",
             "Keep one clear next step per lead.",
-            "Cut down on chaos.",
+            "Cut down on “just checking in” chaos.",
         ],
         "week_3": [
             "Make booking easy with one link.",
             "Send reminders so people show up.",
-            "Reduce back-and-forth.",
+            "Reduce back-and-forth scheduling.",
         ],
         "week_4": [
             "Add simple after-job check-ins.",
             "Ask for reviews the easy way.",
-            "Keep it running smoothly.",
+            "Keep the system running smoothly.",
         ],
     }
 
@@ -926,9 +951,13 @@ Best first fix is: {fix1_name}
 Return ONLY valid JSON in this exact shape:
 
 {{
-  "quick_snapshot": ["...", "...", "...", "..."],
-  "improve": ["...", "...", "..."]
+  "quick_snapshot": ["...", "...", "...", "..."]
 }}
+
+Rules:
+- quick_snapshot = 4 to 6 bullets
+- bullets must stay inside the allowed lane above
+- simple words only
 """
     response = client.responses.create(
         model="gpt-4.1-mini",
@@ -943,47 +972,6 @@ Return ONLY valid JSON in this exact shape:
 
     out = _extract_json_object(raw_text)
     return out if isinstance(out, dict) else {}
-
-
-def _sanitize_improve_list(items: Any) -> List[str]:
-    if not isinstance(items, list):
-        return []
-    cleaned = []
-    for x in items:
-        t = clean_value(x)
-        if not t:
-            continue
-        low = t.lower()
-        mapped = None
-
-        if any(k in low for k in ["reply", "respond", "response", "fast"]):
-            mapped = "Faster replies"
-        elif any(k in low for k in ["miss", "missed", "inbox", "message", "dm", "text"]):
-            mapped = "No missed messages"
-        elif any(k in low for k in ["follow", "follow-up", "follow up"]):
-            mapped = "Consistent follow-up"
-        elif any(k in low for k in ["schedule", "booking", "calendar", "appointment"]):
-            mapped = "Less back-and-forth scheduling"
-        elif any(k in low for k in ["no-show", "noshow", "reminder"]):
-            mapped = "Fewer no-shows"
-        elif any(k in low for k in ["review"]):
-            mapped = "More reviews over time"
-        elif any(k in low for k in ["check-in", "check in", "after"]):
-            mapped = "Simple after-job check-ins"
-        elif any(k in low for k in ["remember", "head"]):
-            mapped = "Less to remember"
-
-        if mapped and mapped in ALLOWED_IMPROVE_BUCKETS:
-            cleaned.append(mapped)
-
-    out = []
-    seen = set()
-    for x in cleaned:
-        if x not in seen:
-            out.append(x)
-            seen.add(x)
-
-    return out[:4]
 
 
 # --------------------------------------------------------------------
@@ -1016,8 +1004,8 @@ def generate_pdf_blueprint(
 
     story: List[Any] = []
 
-    # ------------------- PAGE 1: COVER (TWO CHARTS) -------------------
-    story.append(Spacer(1, 14))
+    # ------------------- PAGE 1: COVER (FORCE 2 CHARTS HERE) -------------------
+    story.append(Spacer(1, 10))
     story.append(Paragraph(safe_p(business_name) if business_name else "Your Business", st["title"]))
     story.append(Paragraph(safe_p(business_type) if business_type else "Business", st["subtitle"]))
 
@@ -1027,25 +1015,36 @@ def generate_pdf_blueprint(
         f"Jobs/orders: {safe_p(jobs_norm) if jobs_norm else 'Not specified'}",
     ]
     story.append(_card_table("Snapshot", cover_lines, st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False))
-    story.append(Spacer(1, 10))
-    story.append(Paragraph("This is a simple diagnosis and a clear first fix.", st["body"]))
-    story.append(Spacer(1, 10))
+    story.append(Spacer(1, 6))
 
+    # Charts block (must fit on page 1)
+    chart_block: List[Any] = []
     if leads_weekly is not None and jobs_weekly is not None:
-        story.append(Paragraph("Workload Snapshot (weekly)", st["h1"]))
-        story.append(
+        chart_block.append(Paragraph("Workload Snapshot (weekly)", st["h1"]))
+        chart_block.append(
             _bar_chart(
                 "Leads/messages vs jobs/orders (per week)",
                 ["Leads/messages", "Jobs/orders"],
                 [int(leads_weekly), int(jobs_weekly)],
                 st,
-                compact=True,
+                height=120,
             )
         )
-        story.append(Spacer(1, 6))
-        story.append(
-            _admin_time_chart(int(leads_weekly), int(jobs_weekly), st)
+        chart_block.append(Spacer(1, 6))
+
+        est = _estimate_admin_hours(int(leads_weekly), int(jobs_weekly))
+        chart_block.append(
+            _bar_chart(
+                "Estimated admin time (hours per week)",
+                list(est.keys()),
+                list(est.values()),
+                st,
+                height=120,
+            )
         )
+
+    if chart_block:
+        story.append(KeepTogether(chart_block))
 
     story.append(PageBreak())
 
@@ -1054,7 +1053,7 @@ def generate_pdf_blueprint(
     story.append(Paragraph("A quick diagnosis in plain words.", st["small"]))
     story.append(Spacer(1, 6))
     story.append(_card_table("Quick Snapshot", bp.get("quick_snapshot", []) or [], st, bg=st["CARD_BG"], placeholder_if_empty=False))
-    story.append(Spacer(1, 10))
+    story.append(Spacer(1, 12))
     story.append(_card_table("What you told me", bp.get("what_you_told_me", []) or [], st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False))
     story.append(PageBreak())
 
@@ -1070,13 +1069,13 @@ def generate_pdf_blueprint(
     story.append(Spacer(1, 8))
 
     story.append(_card_table("What this fixes", _shorten_list(fix1.get("what_this_fixes", []) or [], 6), st, bg=st["CARD_BG_ALT"]))
-    story.append(Spacer(1, 9))
+    story.append(Spacer(1, 10))
     story.append(_card_table("What this does for you", _shorten_list(fix1.get("what_this_does", []) or [], 6), st, bg=st["CARD_BG"]))
-    story.append(Spacer(1, 9))
+    story.append(Spacer(1, 10))
     story.append(_card_table("What’s included", _shorten_list(fix1.get("whats_included", []) or [], 7), st, bg=st["CARD_BG_ALT"]))
     story.append(PageBreak())
 
-    # ------------------- PAGE 4: NEXT FIXES + 30-DAY DIRECTION -------------------
+    # ------------------- PAGE 4: FIX #2/#3 + WEEK 1/2 -------------------
     fix2 = bp.get("fix_2") or {}
     fix3 = bp.get("fix_3") or {}
 
@@ -1089,70 +1088,73 @@ def generate_pdf_blueprint(
         f'{fix3.get("name","Fix #3")}: {fix3.get("short_summary","")}'.strip(),
     ]
     story.append(_card_table("Fix #2 and Fix #3", _shorten_list(other_fixes, 4, max_words=14), st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False))
-    story.append(Spacer(1, 12))
+    story.append(Spacer(1, 14))
 
     plan = bp.get("plan_30_days") or {}
     w1 = _shorten_list(plan.get("week_1", []) or [], 3, max_words=10)
     w2 = _shorten_list(plan.get("week_2", []) or [], 3, max_words=10)
-    w3 = _shorten_list(plan.get("week_3", []) or [], 3, max_words=10)
-    w4 = _shorten_list(plan.get("week_4", []) or [], 3, max_words=10)
 
     story.append(Paragraph("30-Day Direction", st["h1"]))
     story.append(Spacer(1, 6))
     story.append(_card_table("Week 1", w1, st, bg=st["CARD_BG"], placeholder_if_empty=False))
-    story.append(Spacer(1, 9))
+    story.append(Spacer(1, 10))
     story.append(_card_table("Week 2", w2, st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False))
     story.append(PageBreak())
+
+    # ------------------- PAGE 5: WEEK 3/4 + QUICK WINS (fills space) -------------------
+    w3 = _shorten_list(plan.get("week_3", []) or [], 3, max_words=10)
+    w4 = _shorten_list(plan.get("week_4", []) or [], 3, max_words=10)
 
     story.append(Paragraph("30-Day Direction (continued)", st["h1"]))
     story.append(Spacer(1, 6))
     story.append(_card_table("Week 3", w3, st, bg=st["CARD_BG"], placeholder_if_empty=False))
-    story.append(Spacer(1, 9))
+    story.append(Spacer(1, 10))
     story.append(_card_table("Week 4", w4, st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False))
+    story.append(Spacer(1, 12))
+
+    quick_wins = [
+        "Reply in 5 minutes when you can.",
+        "Use one short saved reply.",
+        "Write the next step right away.",
+    ]
+    story.append(_card_table("Quick wins you can do this week", quick_wins, st, bg=st["CARD_BG"], placeholder_if_empty=False))
     story.append(PageBreak())
 
-    # ------------------- PAGE 6: RISK + IMPROVE + BIG CTA -------------------
+    # ------------------- PAGE 6: STRESS + HELP + NEXT STEP + (RISK SCORE AT BOTTOM) -------------------
     improve = bp.get("improve") or []
     improve = _shorten_list(improve, 4, max_words=6)
     if not improve:
         improve = ["Faster replies", "Consistent follow-up", "Clear next steps"]
 
-    story.append(Paragraph("What’s most likely to slip", st["h1"]))
-    story.append(Paragraph("This is a simple risk score based on volume + your answers.", st["small"]))
-    story.append(Spacer(1, 10))
-    story.append(_risk_gauge(risk_score, st))
-    story.append(Spacer(1, 10))
+    # Ensure at least 3 bullets (fills page + feels complete)
+    while len(improve) < 3:
+        if "Clear next steps" not in improve:
+            improve.append("Clear next steps")
+        else:
+            improve.append("No missed messages")
+            break
+
+    story.append(Paragraph("What’s most likely causing stress", st["h1"]))
+    story.append(Paragraph("This is the part that usually slips first.", st["small"]))
+    story.append(Spacer(1, 8))
 
     story.append(_card_table("Big areas causing stress", improve, st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False))
     story.append(Spacer(1, 10))
-
     story.append(_what_i_help_with_block(st))
-    story.append(Spacer(1, 12))
-    story.extend(_big_cta_block(st))
+    story.append(Spacer(1, 10))
+    story.append(_next_step_block(st))
+    story.append(Spacer(1, 14))
+
+    # Risk score moved to bottom (your request)
+    story.append(_score_gauge(risk_score, st))
+
+    story.append(PageBreak())
+
+    # ------------------- PAGE 7: CTA (bigger, less hidden) -------------------
+    story.append(Spacer(1, 18))
+    story.extend(_cta_block(st))
 
     doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
-
-
-# --------------------------------------------------------------------
-# OPTIONAL: Context lookup endpoints
-# --------------------------------------------------------------------
-@app.route("/context", methods=["GET"])
-def context_lookup_query():
-    phone = clean_value(request.args.get("phone"))
-    if not phone:
-        return jsonify({"success": False, "error": "missing phone query parameter"}), 400
-    ctx = get_context_for_phone(phone)
-    if not ctx:
-        return jsonify({"success": False, "error": "no context found"}), 404
-    return jsonify({"success": True, "context": ctx})
-
-
-@app.route("/context/<phone>", methods=["GET"])
-def context_lookup_path(phone: str):
-    ctx = get_context_for_phone(phone)
-    if not ctx:
-        return jsonify({"success": False, "error": "no context found"}), 404
-    return jsonify({"success": True, "context": ctx})
 
 
 # --------------------------------------------------------------------
@@ -1233,13 +1235,12 @@ def run_blueprint():
     ranked = _pick_and_rank_fixes(services_offered, stress, remember)
     fix1, fix2, fix3 = ranked[0], ranked[1], ranked[2]
 
-    plan_30 = _plan_30_days_aligned()
     improve = _build_improve_list(stress, remember)
-
-    risk_score = _followup_risk_score(stress, remember, leads_weekly, jobs_weekly)
+    plan_30 = _plan_30_days_aligned()
+    risk_score = _estimate_score(stress, remember, leads_weekly, jobs_weekly)
 
     bp: Dict[str, Any] = {
-        "quick_snapshot": _diagnosis_summary(services_offered, stress, remember),
+        "quick_snapshot": _diagnosis_summary(services_offered, stress, remember, leads_weekly, jobs_weekly),
         "what_you_told_me": _what_you_told_me(services_offered, stress, remember, leads_norm, jobs_norm),
         "fix_1": {
             "name": fix1["name"],
@@ -1251,9 +1252,10 @@ def run_blueprint():
         "fix_3": {"name": fix3["name"], "short_summary": fix3["short_summary"]},
         "plan_30_days": plan_30,
         "improve": improve,
+        "score": risk_score,
     }
 
-    # Optional: model improves quick snapshot + improvements (still in-lane)
+    # Optional model polish for quick snapshot only (safe)
     try:
         model_part = _ask_model_for_parts(
             business_name=business_name,
@@ -1264,15 +1266,10 @@ def run_blueprint():
             jobs_raw=jobs_raw,
             fix1_name=fix1["name"],
         )
-
         if isinstance(model_part.get("quick_snapshot"), list) and model_part["quick_snapshot"]:
             qs = _shorten_list([_strip_bullet_prefix(str(x)) for x in model_part["quick_snapshot"]], 6, max_words=12)
             if qs:
                 bp["quick_snapshot"] = qs
-
-        model_improve = _sanitize_improve_list(model_part.get("improve"))
-        if model_improve:
-            bp["improve"] = model_improve
     except Exception:
         pass
 
@@ -1315,13 +1312,13 @@ def run_blueprint():
         "fix_2_short_summary": bp["fix_2"]["short_summary"],
         "fix_3_name": bp["fix_3"]["name"],
         "fix_3_short_summary": bp["fix_3"]["short_summary"],
+        "risk_score": bp.get("score", 70),
         "leads_raw": leads_raw or "",
         "jobs_raw": jobs_raw or "",
         "leads_weekly": leads_weekly if leads_weekly is not None else "",
         "jobs_weekly": jobs_weekly if jobs_weekly is not None else "",
         "leads_normalized": leads_norm or "",
         "jobs_normalized": jobs_norm or "",
-        "followup_risk_score": risk_score,
     }
 
     context_blob = {
@@ -1359,5 +1356,3 @@ def healthcheck():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
-
-
