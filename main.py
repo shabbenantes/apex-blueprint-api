@@ -760,43 +760,56 @@ def _estimate_admin_hours(leads_weekly: int, jobs_weekly: int) -> Dict[str, int]
 
 def _slip_risk_gauge(score: int, st) -> Drawing:
     """
-    Clarified + labeled score that makes sense to a business owner.
-    (Updated: adds a tiny qualifier so the number feels interpretable.)
+    Follow-Up Slip Risk gauge.
+
+    FIXED LAYOUT:
+    - qualifier is now BELOW the bar + labels, so it will never get covered.
+    - "low / medium / high" stay directly under the bar.
     """
     score = max(0, min(100, int(score)))
+
     w = 460
-    h = 82
+    h = 96  # a bit taller so nothing collides
+
     pad_x = 10
-    bar_y = 28
-    bar_h = 14
     bar_w = w - (pad_x * 2)
 
+    # Layout coordinates (top-down)
+    title_y = 82
+    desc_y = 68
+
+    bar_y = 44
+    bar_h = 14
+
+    labels_y = 30       # low/medium/high (under bar)
+    qualifier_y = 16    # qualifier (under everything)
+
     d = Drawing(w, h)
-    d.add(String(0, 62, "Follow-Up Slip Risk (0–100)", fontName="Helvetica-Bold", fontSize=12, fillColor=st["NAVY"]))
-    d.add(String(
-        0, 48,
-        "How likely follow-up and next steps get missed when things get busy.",
-        fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]
-    ))
 
-    # ✅ NEW: tiny qualifier line (interpretable, not scary)
-    d.add(String(
-        0, 36,
-        "Most businesses feel strain above 60.",
-        fontName="Helvetica-Oblique", fontSize=9, fillColor=st["MUTED"]
-    ))
+    # Title + description
+    d.add(String(0, title_y, "Follow-Up Slip Risk (0–100)", fontName="Helvetica-Bold", fontSize=12, fillColor=st["NAVY"]))
+    d.add(String(0, desc_y, "How likely follow-up and next steps get missed when things get busy.",
+                 fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
 
-    d.add(String(pad_x, 10, "low", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
-    d.add(String(pad_x + int(bar_w / 2) - 12, 10, "medium", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
-    d.add(String(pad_x + bar_w - 18, 10, "high", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
-
+    # Bar background + fill
     d.add(Rect(pad_x, bar_y, bar_w, bar_h, strokeColor=st["BORDER"], fillColor=st["SOFT"], strokeWidth=1))
     fill_w = int(bar_w * (score / 100.0))
     d.add(Rect(pad_x, bar_y, fill_w, bar_h, strokeColor=None, fillColor=st["BLUE"]))
 
+    # Score number (kept above the bar so it stays readable)
     label_x = pad_x + fill_w
     label_x = max(pad_x + 18, min(pad_x + bar_w - 18, label_x))
     d.add(String(label_x - 10, 56, f"{score}", fontName="Helvetica-Bold", fontSize=12, fillColor=st["NAVY"]))
+
+    # Low/medium/high labels (UNDER the bar)
+    d.add(String(pad_x, labels_y, "low", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
+    d.add(String(pad_x + int(bar_w / 2) - 12, labels_y, "medium", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
+    d.add(String(pad_x + bar_w - 18, labels_y, "high", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
+
+    # Qualifier (UNDER everything)
+    d.add(String(0, qualifier_y, "Most businesses feel strain above 60.",
+                 fontName="Helvetica-Oblique", fontSize=9, fillColor=st["MUTED"]))
+
     return d
 
 
@@ -1377,3 +1390,4 @@ def healthcheck():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
