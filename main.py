@@ -761,6 +761,7 @@ def _estimate_admin_hours(leads_weekly: int, jobs_weekly: int) -> Dict[str, int]
 def _slip_risk_gauge(score: int, st) -> Drawing:
     """
     Clarified + labeled score that makes sense to a business owner.
+    (Updated: adds a tiny qualifier so the number feels interpretable.)
     """
     score = max(0, min(100, int(score)))
     w = 460
@@ -776,6 +777,13 @@ def _slip_risk_gauge(score: int, st) -> Drawing:
         0, 48,
         "How likely follow-up and next steps get missed when things get busy.",
         fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]
+    ))
+
+    # ✅ NEW: tiny qualifier line (interpretable, not scary)
+    d.add(String(
+        0, 36,
+        "Most businesses feel strain above 60.",
+        fontName="Helvetica-Oblique", fontSize=9, fillColor=st["MUTED"]
     ))
 
     d.add(String(pad_x, 10, "low", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
@@ -806,9 +814,11 @@ def _what_i_help_with_block(st) -> Table:
 def _next_step_cta_block(st) -> Table:
     """
     CTA-style 'what to do next' that naturally follows 'What I can help with'.
+    (Updated: adds the 15-minute line.)
     """
     bullets = [
         "Book a quick call.",
+        "The next step takes about 15 minutes.",
         "We’ll walk through your blueprint together.",
         "We’ll pick the first fix and map simple next steps.",
     ]
@@ -818,7 +828,6 @@ def _next_step_cta_block(st) -> Table:
 def _cta_block(st) -> List[Any]:
     url = CALENDAR_URL
 
-    # New: clear "what the call is" section + length (15–20 min)
     call_details = _card_table(
         "What the call is",
         [
@@ -831,7 +840,6 @@ def _cta_block(st) -> List[Any]:
         placeholder_if_empty=False,
     )
 
-    # Existing expanded CTA explanation
     title = _card_table(
         "Want help implementing this?",
         [
@@ -868,7 +876,6 @@ def _cta_block(st) -> List[Any]:
         )
     )
 
-    # KeepTogether so the booking page stays visually grouped
     return [KeepTogether([call_details, Spacer(1, 12), title, Spacer(1, 12), btn])]
 
 
@@ -1134,7 +1141,6 @@ def generate_pdf_blueprint(
     ]
     story.append(_card_table("Quick wins you can do this week", quick_wins, st, bg=st["CARD_BG"], placeholder_if_empty=False))
 
-    # Move Slip Risk to bottom of Page 5 (your request)
     story.append(Spacer(1, 14))
     story.append(_slip_risk_gauge(risk_score, st))
 
@@ -1161,13 +1167,11 @@ def generate_pdf_blueprint(
     story.append(Spacer(1, 10))
     story.append(_what_i_help_with_block(st))
     story.append(Spacer(1, 10))
-
-    # Replace generic "next steps" with CTA-oriented next step block
     story.append(_next_step_cta_block(st))
 
     story.append(PageBreak())
 
-    # ------------------- PAGE 7: BOOKING CTA PAGE (EXTRA EXPLANATION + BUTTON) -------------------
+    # ------------------- PAGE 7: BOOKING CTA PAGE -------------------
     story.append(Spacer(1, 18))
     story.extend(_cta_block(st))
 
@@ -1373,4 +1377,3 @@ def healthcheck():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
-
