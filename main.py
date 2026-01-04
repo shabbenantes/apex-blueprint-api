@@ -445,7 +445,7 @@ def _estimate_score(stress: str, remember: str, leads_weekly: Optional[int], job
 
 
 # --------------------------------------------------------------------
-# IMPROVEMENT AREAS (BROAD BUT STILL "YOU" ONLY)
+# IMPROVEMENT AREAS
 # --------------------------------------------------------------------
 ALLOWED_IMPROVE_BUCKETS = [
     "Faster replies",
@@ -475,11 +475,9 @@ def _build_improve_list(stress: str, remember: str) -> List[str]:
     else:
         out.append("Clear next steps")
 
-    # Ensure at least 3 (fills page better + reads better)
     if len(out) < 3:
         out.append("Clear next steps")
 
-    # Dedup
     seen = set()
     cleaned = []
     for x in out:
@@ -487,7 +485,6 @@ def _build_improve_list(stress: str, remember: str) -> List[str]:
             cleaned.append(x)
             seen.add(x)
 
-    # Fill to 3 if it came out short
     while len(cleaned) < 3:
         if "Clear next steps" not in cleaned:
             cleaned.append("Clear next steps")
@@ -520,7 +517,7 @@ def _brand_styles():
         "ApexTitle",
         parent=styles["Title"],
         fontName="Helvetica-Bold",
-        fontSize=32,   # slightly smaller to make room for charts
+        fontSize=32,
         leading=36,
         alignment=TA_CENTER,
         textColor=NAVY,
@@ -594,7 +591,7 @@ def _brand_styles():
         "CtaBtn",
         parent=styles["BodyText"],
         fontName="Helvetica-Bold",
-        fontSize=22,   # bigger button text
+        fontSize=22,
         leading=24,
         alignment=TA_CENTER,
         textColor=WHITE,
@@ -709,7 +706,6 @@ def _fix_header_bar(title: str, st) -> Table:
 def _bar_chart(title: str, labels: List[str], values: List[int], st, height: int = 115) -> Drawing:
     """
     Compact bar chart that fits on the cover.
-    (We keep these small so BOTH charts stay on page 1 no matter what.)
     """
     height = int(height)
     plot_h = max(52, height - 52)
@@ -751,10 +747,6 @@ def _estimate_admin_hours(leads_weekly: int, jobs_weekly: int) -> Dict[str, int]
     leads_weekly = max(0, int(leads_weekly))
     jobs_weekly = max(0, int(jobs_weekly))
 
-    # Rough averages:
-    # - replying: ~4 min per lead/message
-    # - scheduling: ~6 min per job
-    # - follow-up: ~3 min per job
     replying = (leads_weekly * 4) / 60.0
     scheduling = (jobs_weekly * 6) / 60.0
     follow_up = (jobs_weekly * 3) / 60.0
@@ -780,8 +772,11 @@ def _slip_risk_gauge(score: int, st) -> Drawing:
 
     d = Drawing(w, h)
     d.add(String(0, 62, "Follow-Up Slip Risk (0–100)", fontName="Helvetica-Bold", fontSize=12, fillColor=st["NAVY"]))
-    d.add(String(0, 48, "How likely follow-up and next steps get missed when things get busy.",
-                 fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
+    d.add(String(
+        0, 48,
+        "How likely follow-up and next steps get missed when things get busy.",
+        fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]
+    ))
 
     d.add(String(pad_x, 10, "low", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
     d.add(String(pad_x + int(bar_w / 2) - 12, 10, "medium", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
@@ -808,11 +803,14 @@ def _what_i_help_with_block(st) -> Table:
     return _card_table("What I can help with", bullets, st, bg=st["CARD_BG"], placeholder_if_empty=False)
 
 
-def _next_step_block(st) -> Table:
+def _next_step_cta_block(st) -> Table:
+    """
+    CTA-style 'what to do next' that naturally follows 'What I can help with'.
+    """
     bullets = [
-        "Pick one goal for the next 30 days.",
-        "Fix the first step first.",
-        "Then stack the next step on top.",
+        "Book a quick call.",
+        "We’ll walk through your blueprint together.",
+        "We’ll pick the first fix and map simple next steps.",
     ]
     return _card_table("What to do next", bullets, st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False)
 
@@ -820,7 +818,20 @@ def _next_step_block(st) -> Table:
 def _cta_block(st) -> List[Any]:
     url = CALENDAR_URL
 
-    # Expanded CTA explanation (your #5)
+    # New: clear "what the call is" section + length (15–20 min)
+    call_details = _card_table(
+        "What the call is",
+        [
+            "15–20 minutes.",
+            "We review your blueprint and your biggest bottleneck.",
+            "You leave with a simple first step and a clear plan.",
+        ],
+        st,
+        bg=st["CARD_BG"],
+        placeholder_if_empty=False,
+    )
+
+    # Existing expanded CTA explanation
     title = _card_table(
         "Want help implementing this?",
         [
@@ -857,7 +868,8 @@ def _cta_block(st) -> List[Any]:
         )
     )
 
-    return [KeepTogether([title, Spacer(1, 10), btn])]
+    # KeepTogether so the booking page stays visually grouped
+    return [KeepTogether([call_details, Spacer(1, 12), title, Spacer(1, 12), btn])]
 
 
 # --------------------------------------------------------------------
@@ -883,9 +895,6 @@ def _diagnosis_summary(services: str, stress: str, remember: str, leads_weekly: 
 
 
 def _what_you_told_me(services: str, stress: str, remember: str, leads_norm: str, jobs_norm: str) -> List[str]:
-    """
-    Labels cleaned up to be human + clear (your #2).
-    """
     out: List[str] = []
     if services:
         out.append(f"Your business: {services}")
@@ -1012,7 +1021,7 @@ def generate_pdf_blueprint(
 
     story: List[Any] = []
 
-    # ------------------- PAGE 1: COVER (2 CHARTS ALWAYS ON PAGE 1) -------------------
+    # ------------------- PAGE 1: COVER -------------------
     story.append(Spacer(1, 8))
     story.append(Paragraph(safe_p(business_name) if business_name else "Your Business", st["title"]))
     story.append(Paragraph(safe_p(business_type) if business_type else "Business", st["subtitle"]))
@@ -1024,12 +1033,10 @@ def generate_pdf_blueprint(
     ]
     story.append(_card_table("Snapshot", cover_lines, st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False))
 
-    # Tightened, congruent headline line (ad version 3)
     story.append(Spacer(1, 6))
     story.append(Paragraph("If your business feels harder than it should, there’s usually a reason.", st["body"]))
     story.append(Spacer(1, 8))
 
-    # Chart 1 + Chart 2 (NO KeepTogether so it won't bump to page 2)
     if leads_weekly is not None and jobs_weekly is not None:
         story.append(Paragraph("Workload Snapshot (weekly)", st["h1"]))
         story.append(
@@ -1109,7 +1116,7 @@ def generate_pdf_blueprint(
     story.append(_card_table("Week 2", w2, st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False))
     story.append(PageBreak())
 
-    # ------------------- PAGE 5: WEEK 3/4 + QUICK WINS -------------------
+    # ------------------- PAGE 5: WEEK 3/4 + QUICK WINS + SLIP RISK (BOTTOM) -------------------
     w3 = _shorten_list(plan.get("week_3", []) or [], 3, max_words=10)
     w4 = _shorten_list(plan.get("week_4", []) or [], 3, max_words=10)
 
@@ -1126,9 +1133,14 @@ def generate_pdf_blueprint(
         "Write the next step right away.",
     ]
     story.append(_card_table("Quick wins you can do this week", quick_wins, st, bg=st["CARD_BG"], placeholder_if_empty=False))
+
+    # Move Slip Risk to bottom of Page 5 (your request)
+    story.append(Spacer(1, 14))
+    story.append(_slip_risk_gauge(risk_score, st))
+
     story.append(PageBreak())
 
-    # ------------------- PAGE 6: STRESS + HELP + NEXT STEP + (RISK SCORE AT BOTTOM) -------------------
+    # ------------------- PAGE 6: STRESS + HELP + NEXT STEP (CTA STYLE) -------------------
     improve = bp.get("improve") or []
     improve = _shorten_list(improve, 4, max_words=6)
     if not improve:
@@ -1149,15 +1161,13 @@ def generate_pdf_blueprint(
     story.append(Spacer(1, 10))
     story.append(_what_i_help_with_block(st))
     story.append(Spacer(1, 10))
-    story.append(_next_step_block(st))
-    story.append(Spacer(1, 14))
 
-    # Moved + clarified gauge (your #3 + #4)
-    story.append(_slip_risk_gauge(risk_score, st))
+    # Replace generic "next steps" with CTA-oriented next step block
+    story.append(_next_step_cta_block(st))
 
     story.append(PageBreak())
 
-    # ------------------- PAGE 7: CTA (expanded explanation + big button) -------------------
+    # ------------------- PAGE 7: BOOKING CTA PAGE (EXTRA EXPLANATION + BUTTON) -------------------
     story.append(Spacer(1, 18))
     story.extend(_cta_block(st))
 
@@ -1363,3 +1373,4 @@ def healthcheck():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
