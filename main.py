@@ -108,6 +108,7 @@ def parse_int(s: str) -> Optional[int]:
     s = clean_value(s)
     if not s:
         return None
+    # Pull first integer from strings like "About 50 per week"
     m = re.search(r"(\d{1,7})", s.replace(",", ""))
     if not m:
         return None
@@ -162,10 +163,42 @@ def _shorten_list(items: List[str], max_items: int, max_words: int = 10, max_cha
     return out
 
 
+def _get_any(form_fields: dict, keys: List[str]) -> str:
+    """
+    Safely get the first matching field from:
+    - exact key
+    - key match ignoring case
+    - key match ignoring curly quotes / punctuation differences
+    """
+    if not isinstance(form_fields, dict):
+        return ""
+
+    # 1) exact
+    for k in keys:
+        if k in form_fields:
+            return clean_value(form_fields.get(k))
+
+    # 2) case-insensitive
+    lower_map = {str(k).strip().lower(): k for k in form_fields.keys()}
+    for k in keys:
+        lk = str(k).strip().lower()
+        if lk in lower_map:
+            return clean_value(form_fields.get(lower_map[lk]))
+
+    # 3) normalized (remove non-alnum)
+    def norm(x: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(x).strip().lower())
+
+    norm_map = {norm(k): k for k in form_fields.keys()}
+    for k in keys:
+        nk = norm(k)
+        if nk in norm_map:
+            return clean_value(form_fields.get(norm_map[nk]))
+
+    return ""
+
+
 def _extract_json_object(text: str) -> dict:
-    """
-    Pull the first {...} JSON object from model output.
-    """
     if not text:
         return {}
     m = re.search(r"\{.*\}", text, flags=re.S)
@@ -180,8 +213,8 @@ def _extract_json_object(text: str) -> dict:
 # --------------------------------------------------------------------
 # FIX DEFINITIONS (LOCKED)
 # --------------------------------------------------------------------
-FIX_A = {
-    "key": "A",
+FIX_1 = {
+    "key": "fix_1",
     "name": "Lead Intake & Follow-Up",
     "what_this_fixes": [
         "People reach out in different places.",
@@ -195,17 +228,17 @@ FIX_A = {
     ],
     "whats_included": [
         "One clear place for new leads.",
-        "Automatic replies.",
-        "A simple way to see who needs follow-up.",
+        "Auto-replies for new messages.",
+        "A simple follow-up list.",
     ],
-    "short_summary": "This helps you reply and follow up every time.",
+    "short_summary": "Reply fast. Follow up every time.",
 }
 
-FIX_B = {
-    "key": "B",
+FIX_2 = {
+    "key": "fix_2",
     "name": "Scheduling & Admin Help",
     "what_this_fixes": [
-        "Too much back-and-forth.",
+        "Too much back-and-forth booking.",
         "People miss appointments.",
         "Your day gets interrupted.",
     ],
@@ -216,17 +249,17 @@ FIX_B = {
     ],
     "whats_included": [
         "One booking link.",
-        "Clear confirmations.",
-        "Reminders so people show up.",
+        "Confirmations and reminders.",
+        "Easy reschedule options.",
     ],
-    "short_summary": "This helps booking feel simple and calm.",
+    "short_summary": "Make booking simple and calm.",
 }
 
-FIX_C = {
-    "key": "C",
+FIX_3 = {
+    "key": "fix_3",
     "name": "Client Follow-Through",
     "what_this_fixes": [
-        "Jobs get done, then nothing happens.",
+        "The job gets done, then nothing happens.",
         "Clients don’t hear back.",
         "Reviews and repeat work get missed.",
     ],
@@ -236,59 +269,59 @@ FIX_C = {
         "More repeat work over time.",
     ],
     "whats_included": [
-        "Simple follow-ups after jobs.",
+        "After-job follow-ups.",
         "Light review requests.",
-        "Reminders so nothing gets skipped.",
+        "Simple check-ins over time.",
     ],
-    "short_summary": "This helps you follow up after the work is done.",
+    "short_summary": "Follow up after the job.",
 }
 
-ALL_FIXES = [FIX_A, FIX_B, FIX_C]
+ALL_FIXES = [FIX_1, FIX_2, FIX_3]
 
 
 def _pick_and_rank_fixes(services: str, stress: str, remember: str) -> List[dict]:
     """
     Returns fixes ranked [Fix #1, Fix #2, Fix #3].
-    Simple keyword scoring. If unclear, defaults to Fix A.
+    Simple keyword scoring. If unclear, defaults to Fix 1, Fix 2, Fix 3.
     """
     text = " ".join([services or "", stress or "", remember or ""]).lower()
 
-    score_a = 0
-    score_b = 0
-    score_c = 0
+    score_1 = 0
+    score_2 = 0
+    score_3 = 0
 
-    # Fix A signals: leads, messages, follow-up, forgetting, inbox
+    # Fix 1: messages, leads, follow-up, missed
     if any(k in text for k in [
         "lead", "leads", "inquiry", "inquiries", "message", "messages", "dm",
         "text", "reply", "respond", "response", "follow", "follow-up",
-        "forgot", "forget", "missed", "no one heard back", "ghost"
+        "forgot", "forget", "miss", "missed", "ghost", "instagram", "facebook"
     ]):
-        score_a += 3
-    if any(k in text for k in ["facebook", "instagram", "website", "email", "phone", "call"]):
-        score_a += 1
+        score_1 += 3
+    if any(k in text for k in ["email", "website", "call", "phone"]):
+        score_1 += 1
 
-    # Fix B signals: scheduling, calendar, appointments, no-shows
+    # Fix 2: booking, schedule, appointments
     if any(k in text for k in [
         "schedule", "scheduling", "calendar", "appointment", "appointments",
-        "book", "booking", "reschedule", "no-show", "noshow"
+        "book", "booking", "reschedule", "no-show", "noshow", "availability"
     ]):
-        score_b += 3
-    if any(k in text for k in ["back and forth", "back-and-forth", "availability", "time slots"]):
-        score_b += 2
+        score_2 += 3
+    if "back and forth" in text or "back-and-forth" in text:
+        score_2 += 2
 
-    # Fix C signals: after the job, reviews, repeat, check-ins
+    # Fix 3: after job, reviews, repeat work
     if any(k in text for k in [
-        "review", "reviews", "google", "yelp", "testimonial", "repeat", "return",
-        "retention", "check in", "check-in", "after", "afterward", "follow through",
-        "follow-through"
+        "review", "reviews", "google", "yelp", "testimonial",
+        "repeat", "return", "retention", "check in", "check-in",
+        "after", "afterward", "follow through", "follow-through"
     ]):
-        score_c += 3
+        score_3 += 3
 
-    scores = [(score_a, FIX_A), (score_b, FIX_B), (score_c, FIX_C)]
+    scores = [(score_1, FIX_1), (score_2, FIX_2), (score_3, FIX_3)]
     scores.sort(key=lambda x: x[0], reverse=True)
 
     if scores[0][0] == 0:
-        return [FIX_A, FIX_B, FIX_C]
+        return [FIX_1, FIX_2, FIX_3]
 
     ranked = [scores[0][1]]
     for _, fx in scores[1:]:
@@ -299,32 +332,37 @@ def _pick_and_rank_fixes(services: str, stress: str, remember: str) -> List[dict
 
 def _estimate_score(stress: str, remember: str, leads: Optional[int], jobs: Optional[int]) -> int:
     """
-    Simple score (0–100). Lower = more chaos / more things slipping.
+    Simple score (0–100). Lower = more chaos.
     """
     base = 78
     text = " ".join([stress or "", remember or ""]).lower()
 
-    chaos_words = ["miss", "forgot", "forget", "overwhelm", "overwhelmed", "behind", "stress", "mess", "chaos", "dropped", "drop"]
+    chaos_words = [
+        "miss", "missed", "forgot", "forget",
+        "overwhelm", "overwhelmed", "behind", "stress",
+        "mess", "chaos", "dropped", "drop"
+    ]
     for w in chaos_words:
         if w in text:
             base -= 4
 
-    if leads is None:
-        base -= 4
-    if jobs is None:
-        base -= 4
-
-    # Volume can increase strain
+    # If volume is high, strain can be higher
     if leads is not None and leads >= 20:
         base -= 6
     if jobs is not None and jobs >= 20:
         base -= 6
 
+    # Missing numbers: small penalty
+    if leads is None:
+        base -= 3
+    if jobs is None:
+        base -= 3
+
     return max(25, min(92, base))
 
 
 # --------------------------------------------------------------------
-# PDF DESIGN SYSTEM (kept from your original)
+# PDF DESIGN SYSTEM
 # --------------------------------------------------------------------
 def _brand_styles():
     styles = getSampleStyleSheet()
@@ -474,7 +512,7 @@ def _header_footer(canvas, doc):
 
 
 # --------------------------------------------------------------------
-# CARD BUILDING
+# PDF BUILDING HELPERS
 # --------------------------------------------------------------------
 def _card_table(
     title: str,
@@ -530,9 +568,6 @@ def _fix_header_bar(title: str, st) -> Table:
     return tbl
 
 
-# --------------------------------------------------------------------
-# CHARTS (kept simple)
-# --------------------------------------------------------------------
 def _bar_chart(title: str, labels: List[str], values: List[int], st, compact: bool = False) -> Drawing:
     height = 155 if compact else 190
     plot_h = 85 if compact else 110
@@ -608,7 +643,7 @@ def _cta_block(st) -> List[Any]:
         placeholder_if_empty=False,
     )
 
-    btn_text = f'<link href="{safe_p(url)}" color="white"><b>Book Business Fix Call →</b></link>'
+    btn_text = f'<link href="{safe_p(url)}" color="white"><b>Book a quick call →</b></link>'
 
     btn = Table(
         [[Paragraph(btn_text, st["cta_btn"])]],
@@ -635,95 +670,62 @@ def _cta_block(st) -> List[Any]:
 
 
 # --------------------------------------------------------------------
-# BLUEPRINT BUILD (V2)
+# BLUEPRINT CONTENT BUILD (SIMPLE + STABLE)
 # --------------------------------------------------------------------
-def _build_fallback_bp(
-    business_name: str,
-    services_offered: str,
-    stress: str,
-    remember: str,
-    leads_n: Optional[int],
-    jobs_n: Optional[int],
-    fix1: dict,
-    fix2: dict,
-    fix3: dict,
-) -> dict:
-    score = _estimate_score(stress, remember, leads_n, jobs_n)
-
-    quick = []
-    if services_offered:
-        quick.append(f"You run: {services_offered}.")
+def _fallback_quick_snapshot(business_name: str, services: str, stress: str, remember: str, leads_n: Optional[int], jobs_n: Optional[int]) -> List[str]:
+    out = []
+    if business_name:
+        out.append(f"Business: {business_name}.")
+    if services:
+        out.append("You do: " + services)
     if stress:
-        quick.append("Things feel harder than they should.")
+        out.append("Hardest right now: " + stress)
     if remember:
-        quick.append("A lot is living in your head.")
+        out.append("You are trying to remember: " + remember)
     if leads_n is not None:
-        quick.append(f"New messages each week: about {leads_n}.")
+        out.append(f"New messages each week: about {leads_n}.")
     if jobs_n is not None:
-        quick.append(f"Work each week: about {jobs_n} jobs/orders.")
-    quick = _shorten_list(quick, 6, max_words=12)
+        out.append(f"Work each week: about {jobs_n} jobs/orders.")
+    if not out:
+        out = ["You want things to feel easier.", "You want a clear next step."]
+    return _shorten_list(out, 6, max_words=12)
 
-    improve = _shorten_list(
-        ["Reply speed", "Clear next steps", "Less to remember"],
-        3,
-        max_words=6
-    )
 
-    plan = {
-        "week_1": ["Get things in one place.", "Stop guessing what’s next.", "Make it simple."],
-        "week_2": ["Make replies faster.", "Make follow-up easy.", "Keep it consistent."],
-        "week_3": ["Cut down busywork.", "Protect your time.", "Make fewer mistakes."],
-        "week_4": ["Check what improved.", "Fix the weak spots.", "Keep the wins."],
-    }
-
+def _fallback_plan_30_days() -> Dict[str, List[str]]:
     return {
-        "quick_snapshot": quick,
-        "score": score,
-        "improve": improve,
-        "plan_30_days": plan,
-        "fix_1": {
-            "name": fix1["name"],
-            "what_this_fixes": fix1["what_this_fixes"],
-            "what_this_does": fix1["what_this_does"],
-            "whats_included": fix1["whats_included"],
-        },
-        "fix_2": {"name": fix2["name"], "short_summary": fix2["short_summary"]},
-        "fix_3": {"name": fix3["name"], "short_summary": fix3["short_summary"]},
+        "week_1": ["Get all messages in one place.", "Reply fast to new people.", "Stop missing requests."],
+        "week_2": ["Make follow-up automatic.", "Keep a simple next-step list.", "Cut down back-and-forth."],
+        "week_3": ["Make booking simple.", "Send reminders so people show up.", "Protect your time."],
+        "week_4": ["Do quick check-ins.", "Ask for reviews the easy way.", "Keep the system working."],
     }
 
 
-def _ask_model_for_bp(
+def _ask_model_for_parts(
     business_name: str,
-    services_offered: str,
+    services: str,
     stress: str,
     remember: str,
     leads_per_week: str,
     jobs_per_week: str,
-    fix1: dict,
-    fix2: dict,
-    fix3: dict,
+    fix1_name: str,
 ) -> dict:
     """
-    Ask the model for simple snapshot, improvements, 30-day plan.
-    Fix blocks are locked and provided by us.
+    Optional: ask the model for better quick snapshot + plan.
+    Must stay third-grade level. Must be short. JSON only.
     """
     prompt = f"""
 Write for a stressed business owner.
-Use very simple words. Third-grade reading level.
-Short sentences. No jargon. No tech talk.
+Third-grade reading level.
+Short sentences. No tech words.
 
-Business:
-- Name: {business_name or "Your Business"}
-- What they do: {services_offered or "Not provided"}
-- Hardest right now: {stress or "Not provided"}
-- Always trying to remember: {remember or "Not provided"}
-- Leads/messages per week: {leads_per_week or "Not provided"}
-- Jobs/orders/clients per week: {jobs_per_week or "Not provided"}
+Business name: {business_name or "Your Business"}
+What they do: {services or "Not provided"}
+Hardest right now: {stress or "Not provided"}
+Always trying to remember: {remember or "Not provided"}
+Leads/messages per week: {leads_per_week or "Not provided"}
+Jobs/orders/clients per week: {jobs_per_week or "Not provided"}
 
-Their fixes are ranked:
-Fix #1: {fix1["name"]}
-Fix #2: {fix2["name"]}
-Fix #3: {fix3["name"]}
+The best first fix is: {fix1_name}
 
 Return ONLY valid JSON in this exact shape:
 
@@ -744,6 +746,7 @@ Rules:
 - each bullet is short
 - simple words only
 """
+
     response = client.responses.create(
         model="gpt-4.1-mini",
         input=prompt,
@@ -760,60 +763,48 @@ Rules:
 
 
 def _bp_to_text(bp: dict, lead_name: str, business_name: str) -> str:
-    """
-    Human-readable text version (helpful for debugging/logging and your API response).
-    """
-    qs = bp.get("quick_snapshot") or []
-    fx1 = bp.get("fix_1") or {}
-    fx2 = bp.get("fix_2") or {}
-    fx3 = bp.get("fix_3") or {}
-    score = bp.get("score")
-    improve = bp.get("improve") or []
-    plan = bp.get("plan_30_days") or {}
-
     lines = []
     lines.append(f"Prepared for: {lead_name}")
     lines.append(f"Business: {business_name or 'Your Business'}")
     lines.append("")
+
     lines.append("Quick Snapshot:")
-    for x in qs:
-        lines.append(f"- {_strip_bullet_prefix(str(x))}")
+    for x in bp.get("quick_snapshot", []) or []:
+        lines.append("- " + _strip_bullet_prefix(str(x)))
+
     lines.append("")
-    lines.append("First Thing to Fix:")
-    lines.append(f"- {fx1.get('name','')}")
-    lines.append("What this fixes:")
-    for x in fx1.get("what_this_fixes", []):
-        lines.append(f"- {_strip_bullet_prefix(str(x))}")
-    lines.append("What this does for you:")
-    for x in fx1.get("what_this_does", []):
-        lines.append(f"- {_strip_bullet_prefix(str(x))}")
-    lines.append("What's included:")
-    for x in fx1.get("whats_included", []):
-        lines.append(f"- {_strip_bullet_prefix(str(x))}")
+    lines.append("Fix #1 (Do this first): " + (bp.get("fix_1", {}).get("name", "")))
+    for label, key in [("What this fixes", "what_this_fixes"), ("What this does", "what_this_does"), ("What's included", "whats_included")]:
+        lines.append(label + ":")
+        for x in (bp.get("fix_1", {}).get(key, []) or []):
+            lines.append("- " + _strip_bullet_prefix(str(x)))
+
     lines.append("")
-    lines.append("Other helpful fixes:")
-    lines.append(f"- {fx2.get('name','')}: {fx2.get('short_summary','')}")
-    lines.append(f"- {fx3.get('name','')}: {fx3.get('short_summary','')}")
-    lines.append("")
+    lines.append("Fix #2: " + (bp.get("fix_2", {}).get("name", "")))
+    lines.append("Fix #3: " + (bp.get("fix_3", {}).get("name", "")))
+
+    score = bp.get("score", None)
     if isinstance(score, int):
+        lines.append("")
         lines.append(f"Score: {score}/100")
-    if improve:
-        lines.append("Biggest improvement areas:")
-        for x in improve:
-            lines.append(f"- {_strip_bullet_prefix(str(x))}")
+
     lines.append("")
-    lines.append("30-day direction:")
+    lines.append("30-Day Direction:")
+    plan = bp.get("plan_30_days", {}) or {}
     for wk in ["week_1", "week_2", "week_3", "week_4"]:
-        items = plan.get(wk) or []
+        items = plan.get(wk, []) or []
         if items:
-            lines.append(f"{wk.replace('_',' ').title()}:")
+            lines.append(wk.replace("_", " ").title() + ":")
             for x in items:
-                lines.append(f"- {_strip_bullet_prefix(str(x))}")
+                lines.append("- " + _strip_bullet_prefix(str(x)))
 
     return "\n".join(lines).strip()
 
 
-def generate_pdf_blueprint_v2(
+# --------------------------------------------------------------------
+# PDF GENERATION (CLEANER FLOW, NO WEEK 3/4 SPLIT)
+# --------------------------------------------------------------------
+def generate_pdf_blueprint(
     bp: dict,
     pdf_path: str,
     lead_name: str,
@@ -836,12 +827,11 @@ def generate_pdf_blueprint_v2(
     )
 
     story: List[Any] = []
-
     leads_n = parse_int(leads_per_week)
     jobs_n = parse_int(jobs_per_week)
 
     # ------------------- PAGE 1: COVER -------------------
-    story.append(Spacer(1, 22))
+    story.append(Spacer(1, 18))
     story.append(Paragraph(safe_p(business_name) if business_name else "Your Business", st["title"]))
     story.append(Paragraph(safe_p(business_type) if business_type else "Business", st["subtitle"]))
 
@@ -851,9 +841,9 @@ def generate_pdf_blueprint_v2(
         f"Jobs/orders/clients per week: {safe_p(jobs_per_week) if jobs_per_week else 'Not specified'}",
     ]
     story.append(_card_table("Snapshot", cover_lines, st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False))
-    story.append(Spacer(1, 8))
+    story.append(Spacer(1, 10))
     story.append(Paragraph("This shows what to fix first.", st["body"]))
-    story.append(Spacer(1, 18))
+    story.append(Spacer(1, 14))
 
     if leads_n is not None and jobs_n is not None:
         story.append(Paragraph("Workload Snapshot", st["h1"]))
@@ -869,49 +859,46 @@ def generate_pdf_blueprint_v2(
 
     story.append(PageBreak())
 
-    # ------------------- PAGE 2: QUICK SNAPSHOT + WHAT YOU SAID -------------------
-    quick_snapshot = _shorten_list([_strip_bullet_prefix(x) for x in (bp.get("quick_snapshot") or [])], 6)
-    card_a = _card_table("Quick Snapshot", quick_snapshot, st, bg=st["CARD_BG"], placeholder_if_empty=True)
+    # ------------------- PAGE 2: QUICK SUMMARY -------------------
+    quick_snapshot = _shorten_list([_strip_bullet_prefix(x) for x in (bp.get("quick_snapshot") or [])], 6, max_words=12)
+    if not quick_snapshot:
+        quick_snapshot = ["You want things to feel easier.", "You want a clear next step."]
 
     what_you_said = bp.get("what_you_said") or []
-    # If model didn’t provide it, we keep it simple:
     if not what_you_said:
-        what_you_said = [
-            "You want things to feel easier.",
-            "You want fewer missed things.",
-            "You want a clear next step.",
-        ]
+        what_you_said = ["You want fewer missed things.", "You want fast replies.", "You want less to remember."]
     what_you_said = _shorten_list([_strip_bullet_prefix(x) for x in what_you_said], 5, max_words=12)
 
-    card_b = _card_table("What You Told Me", what_you_said, st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False)
     story.append(Paragraph("Quick Summary", st["h1"]))
     story.append(Spacer(1, 6))
-    story.append(card_a)
-    story.append(Spacer(1, 14))
-    story.append(card_b)
+    story.append(_card_table("Quick Snapshot", quick_snapshot, st, bg=st["CARD_BG"], placeholder_if_empty=False))
+    story.append(Spacer(1, 12))
+    story.append(_card_table("What You Told Me", what_you_said, st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False))
     story.append(PageBreak())
 
-    # ------------------- PAGE 3: FIRST THING TO FIX -------------------
+    # ------------------- PAGE 3: FIX #1 (MAIN) -------------------
     fix1 = bp.get("fix_1") or {}
     fix1_name = fix1.get("name", "Fix #1")
+
     story.append(Paragraph("The First Thing to Fix", st["h1"]))
     story.append(Paragraph("This is the best first step right now.", st["small"]))
     story.append(Spacer(1, 6))
+
     story.append(_fix_header_bar(f"Fix #1: {fix1_name}", st))
     story.append(Spacer(1, 8))
 
-    story.append(_card_table("What this fixes", _shorten_list(fix1.get("what_this_fixes", []), 6), st, bg=st["CARD_BG_ALT"]))
+    story.append(_card_table("What this fixes", _shorten_list(fix1.get("what_this_fixes", []) or [], 6), st, bg=st["CARD_BG_ALT"]))
     story.append(Spacer(1, 10))
-    story.append(_card_table("What this does for you", _shorten_list(fix1.get("what_this_does", []), 6), st, bg=st["CARD_BG"]))
+    story.append(_card_table("What this does for you", _shorten_list(fix1.get("what_this_does", []) or [], 6), st, bg=st["CARD_BG"]))
     story.append(Spacer(1, 10))
-    story.append(_card_table("What’s included", _shorten_list(fix1.get("whats_included", []), 6), st, bg=st["CARD_BG_ALT"]))
+    story.append(_card_table("What’s included", _shorten_list(fix1.get("whats_included", []) or [], 7), st, bg=st["CARD_BG_ALT"]))
     story.append(PageBreak())
 
-    # ------------------- PAGE 4: OTHER FIXES + 30-DAY DIRECTION -------------------
+    # ------------------- PAGE 4: FIX #2 + FIX #3 + 30-DAY DIRECTION (ALL TOGETHER) -------------------
     fix2 = bp.get("fix_2") or {}
     fix3 = bp.get("fix_3") or {}
 
-    story.append(Paragraph("Other Helpful Fixes (Optional)", st["h1"]))
+    story.append(Paragraph("Other Helpful Fixes", st["h1"]))
     story.append(Paragraph("These can come later. Not required now.", st["small"]))
     story.append(Spacer(1, 6))
 
@@ -928,14 +915,30 @@ def generate_pdf_blueprint_v2(
     w3 = _shorten_list(plan.get("week_3", []) or [], 3, max_words=10)
     w4 = _shorten_list(plan.get("week_4", []) or [], 3, max_words=10)
 
+    if not w1 and not w2 and not w3 and not w4:
+        plan = _fallback_plan_30_days()
+        w1 = plan["week_1"]
+        w2 = plan["week_2"]
+        w3 = plan["week_3"]
+        w4 = plan["week_4"]
+
     story.append(Paragraph("30-Day Direction", st["h1"]))
     story.append(Spacer(1, 6))
-    story.append(_card_table("Week 1", w1, st, bg=st["CARD_BG"]))
+
+    # Pack weeks 1–4 onto 2 pages, grouped correctly
+    story.append(_card_table("Week 1", w1, st, bg=st["CARD_BG"], placeholder_if_empty=False))
     story.append(Spacer(1, 10))
-    story.append(_card_table("Week 2", w2, st, bg=st["CARD_BG_ALT"]))
+    story.append(_card_table("Week 2", w2, st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False))
     story.append(PageBreak())
 
-    # ------------------- PAGE 5: SCORE + IMPROVEMENTS + CTA -------------------
+    story.append(Paragraph("30-Day Direction (continued)", st["h1"]))
+    story.append(Spacer(1, 6))
+    story.append(_card_table("Week 3", w3, st, bg=st["CARD_BG"], placeholder_if_empty=False))
+    story.append(Spacer(1, 10))
+    story.append(_card_table("Week 4", w4, st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False))
+    story.append(PageBreak())
+
+    # ------------------- PAGE 6: SCORE + CTA -------------------
     score = bp.get("score")
     if not isinstance(score, int):
         score = 70
@@ -950,11 +953,6 @@ def generate_pdf_blueprint_v2(
     story.append(_score_gauge(score, st))
     story.append(Spacer(1, 10))
     story.append(_card_table("Biggest areas to improve", improve, st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False))
-    story.append(Spacer(1, 10))
-    story.append(_card_table("Week 3 and Week 4 (quick)", _shorten_list([
-        "Week 3: " + " ".join(w3) if w3 else "Week 3: Keep it simple.",
-        "Week 4: " + " ".join(w4) if w4 else "Week 4: Keep what works.",
-    ], 2, max_words=18), st, bg=st["CARD_BG"], placeholder_if_empty=False))
     story.append(Spacer(1, 14))
     story.extend(_cta_block(st))
 
@@ -999,6 +997,7 @@ def run_blueprint():
         or {}
     )
 
+    # Lead basics
     name = clean_value(
         contact.get("full_name")
         or contact.get("name")
@@ -1011,109 +1010,113 @@ def run_blueprint():
     phone_digits = normalize_phone(phone_raw)
     phone_e164 = to_e164(phone_digits)
 
-    # Keep your existing field keys intact, and also accept question labels.
-    business_name = clean_value(form_fields.get("business_name") or form_fields.get("Business Name"))
-    business_type = clean_value(form_fields.get("business_type") or form_fields.get("Business Type"))
+    # Business fields (optional; keep compatibility)
+    business_name = _get_any(form_fields, ["business_name", "Business Name"])
+    business_type = _get_any(form_fields, ["business_type", "Business Type"])
 
-    # 5-question form (locked fields)
-    services_offered = clean_value(
-        form_fields.get("services_offered")
-        or form_fields.get("Services You Offer")
-        or form_fields.get("What do you sell or do?")
-        or form_fields.get("What do you do?")
-    )
+    # Your 5-question form fields (robust matching)
+    services_offered = _get_any(form_fields, [
+        "services_offered",
+        "Services You Offer",
+        "In a sentence or two, what do you sell or do?",
+        "What do you sell or do?",
+        "What do you do?",
+    ])
 
-    stress = clean_value(
-        form_fields.get("frustrations")
-        or form_fields.get("What Frustrates You Most")
-        or form_fields.get("What feels hardest or most stressful right now?")
-    )
+    stress = _get_any(form_fields, [
+        "frustrations",
+        "What Frustrates You Most",
+        "What feels hardest or most stressful right now?",
+        "What feels hardest or most stressful right now",
+    ])
 
-    remember = clean_value(
-        form_fields.get("bottlenecks")
-        or form_fields.get("Biggest Operational Bottlenecks")
-        or form_fields.get("What do you feel like you’re always trying to remember or keep track of?")
-    )
+    remember = _get_any(form_fields, [
+        "bottlenecks",
+        "Biggest Operational Bottlenecks",
+        "What do you feel like you’re always trying to remember or keep track of?",
+        "What do you feel like you're always trying to remember or keep track of?",
+        "What are you always trying to remember?",
+    ])
 
-    leads_per_week = clean_value(
-        form_fields.get("leads_per_week")
-        or form_fields.get("Leads Per Week")
-        or form_fields.get("About how many new leads or messages do you get in a week?")
-    )
+    leads_per_week = _get_any(form_fields, [
+        "leads_per_week",
+        "Leads Per Week",
+        "About how many new leads or messages do you get in a week?",
+        "About how many new leads or messages do you get in a week",
+        "New customers/leads per week",
+        "Leads/messages per week",
+    ])
 
-    jobs_per_week = clean_value(
-        form_fields.get("jobs_per_week")
-        or form_fields.get("Jobs Per Week")
-        or form_fields.get("About how many jobs, orders, or clients do you handle in a week?")
-    )
+    jobs_per_week = _get_any(form_fields, [
+        "jobs_per_week",
+        "Jobs Per Week",
+        "About how many jobs, orders, or clients do you handle in a week?",
+        "About how many jobs, orders, or clients do you handle in a week",
+        "Jobs/orders per week",
+        "Jobs/orders/clients per week",
+    ])
 
     leads_n = parse_int(leads_per_week)
     jobs_n = parse_int(jobs_per_week)
 
-    # Rank fixes
+    # Rank the 3 locked fixes
     ranked = _pick_and_rank_fixes(services_offered, stress, remember)
     fix1, fix2, fix3 = ranked[0], ranked[1], ranked[2]
 
-    # Build a base BP
-    base_bp = _build_fallback_bp(
-        business_name=business_name,
-        services_offered=services_offered,
-        stress=stress,
-        remember=remember,
-        leads_n=leads_n,
-        jobs_n=jobs_n,
-        fix1=fix1,
-        fix2=fix2,
-        fix3=fix3,
-    )
+    # Base blueprint (stable, always works)
+    bp: Dict[str, Any] = {
+        "quick_snapshot": _fallback_quick_snapshot(business_name, services_offered, stress, remember, leads_n, jobs_n),
+        "what_you_said": _shorten_list(
+            [x for x in [
+                ("You do: " + services_offered) if services_offered else "",
+                ("Hardest right now: " + stress) if stress else "",
+                ("You are trying to remember: " + remember) if remember else "",
+                (f"You get about {leads_n} new messages a week.") if leads_n is not None else "",
+                (f"You handle about {jobs_n} jobs a week.") if jobs_n is not None else "",
+            ] if x],
+            5,
+            max_words=12
+        ),
+        "fix_1": {
+            "name": fix1["name"],
+            "what_this_fixes": fix1["what_this_fixes"],
+            "what_this_does": fix1["what_this_does"],
+            "whats_included": fix1["whats_included"],
+        },
+        "fix_2": {"name": fix2["name"], "short_summary": fix2["short_summary"]},
+        "fix_3": {"name": fix3["name"], "short_summary": fix3["short_summary"]},
+        "plan_30_days": _fallback_plan_30_days(),
+        "improve": ["Reply speed", "Clear next steps", "Less to remember"],
+        "score": _estimate_score(stress, remember, leads_n, jobs_n),
+    }
 
-    # Ask model for better quick snapshot + plan (optional enhancement)
-    # If it fails, we still deliver a good PDF using fallback.
+    # Optional: model improves quick snapshot + plan (but never breaks the blueprint)
     try:
-        model_part = _ask_model_for_bp(
+        model_part = _ask_model_for_parts(
             business_name=business_name,
-            services_offered=services_offered,
+            services=services_offered,
             stress=stress,
             remember=remember,
             leads_per_week=leads_per_week,
             jobs_per_week=jobs_per_week,
-            fix1=fix1,
-            fix2=fix2,
-            fix3=fix3,
+            fix1_name=fix1["name"],
         )
-        if model_part.get("quick_snapshot"):
-            base_bp["quick_snapshot"] = _shorten_list(model_part.get("quick_snapshot") or [], 6, max_words=12)
-        if model_part.get("improve"):
-            base_bp["improve"] = _shorten_list(model_part.get("improve") or [], 4, max_words=8)
-        if model_part.get("plan_30_days"):
-            base_bp["plan_30_days"] = model_part.get("plan_30_days") or base_bp["plan_30_days"]
+        if isinstance(model_part.get("quick_snapshot"), list) and model_part["quick_snapshot"]:
+            bp["quick_snapshot"] = _shorten_list(model_part["quick_snapshot"], 6, max_words=12)
+        if isinstance(model_part.get("improve"), list) and model_part["improve"]:
+            bp["improve"] = _shorten_list(model_part["improve"], 4, max_words=8)
+        if isinstance(model_part.get("plan_30_days"), dict) and model_part["plan_30_days"]:
+            bp["plan_30_days"] = model_part["plan_30_days"]
     except Exception:
         pass
-
-    # Score (always computed so it’s stable)
-    base_bp["score"] = _estimate_score(stress, remember, leads_n, jobs_n)
-
-    # Optional: a small "What you told me" list for page 2 (kept simple)
-    what_you_said = []
-    if services_offered:
-        what_you_said.append(f"You do: {services_offered}.")
-    if stress:
-        what_you_said.append("The hardest part right now is stress.")
-    if remember:
-        what_you_said.append("You are trying to remember too much.")
-    if leads_n is not None:
-        what_you_said.append(f"You get about {leads_n} new messages a week.")
-    if jobs_n is not None:
-        what_you_said.append(f"You handle about {jobs_n} jobs a week.")
-    base_bp["what_you_said"] = _shorten_list(what_you_said, 5, max_words=12)
 
     # Build PDF
     pdf_id = uuid.uuid4().hex
     pdf_filename = f"business_blueprint_{pdf_id}.pdf"
     pdf_path = os.path.join("/tmp", pdf_filename)
 
-    generate_pdf_blueprint_v2(
-        bp=base_bp,
+    generate_pdf_blueprint(
+        bp=bp,
         pdf_path=pdf_path,
         lead_name=name,
         business_name=business_name,
@@ -1135,23 +1138,25 @@ def run_blueprint():
 
     pdf_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
 
-    # Human-readable text (nice for logs / response)
-    blueprint_text = _bp_to_text(base_bp, lead_name=name, business_name=business_name)
+    # Human-readable text version
+    blueprint_text = _bp_to_text(bp, lead_name=name, business_name=business_name)
 
-    # Proposal-ready fields (pre-populate Fix 1/2/3 in your proposal system)
+    # Proposal-ready fields (pre-populate Fix 1/2/3 in your proposal)
     proposal_fields = {
-        "fix_1_name": base_bp["fix_1"]["name"],
-        "fix_1_what_this_fixes": base_bp["fix_1"]["what_this_fixes"],
-        "fix_1_what_this_does": base_bp["fix_1"]["what_this_does"],
-        "fix_1_whats_included": base_bp["fix_1"]["whats_included"],
-        "fix_2_name": base_bp["fix_2"]["name"],
-        "fix_2_short_summary": base_bp["fix_2"]["short_summary"],
-        "fix_3_name": base_bp["fix_3"]["name"],
-        "fix_3_short_summary": base_bp["fix_3"]["short_summary"],
-        "score": base_bp.get("score", 70),
+        "fix_1_name": bp["fix_1"]["name"],
+        "fix_1_what_this_fixes": bp["fix_1"]["what_this_fixes"],
+        "fix_1_what_this_does": bp["fix_1"]["what_this_does"],
+        "fix_1_whats_included": bp["fix_1"]["whats_included"],
+        "fix_2_name": bp["fix_2"]["name"],
+        "fix_2_short_summary": bp["fix_2"]["short_summary"],
+        "fix_3_name": bp["fix_3"]["name"],
+        "fix_3_short_summary": bp["fix_3"]["short_summary"],
+        "score": bp.get("score", 70),
+        "leads_per_week": leads_per_week or "",
+        "jobs_per_week": jobs_per_week or "",
     }
 
-    # Store context for later outreach / lookup
+    # Store context for later lookup
     context_blob = {
         "lead_name": name,
         "lead_email": email,
@@ -1160,7 +1165,7 @@ def run_blueprint():
         "business_type": business_type,
         "pdf_url": pdf_url,
         "proposal_fields": proposal_fields,
-        "quick_snapshot": base_bp.get("quick_snapshot", []),
+        "quick_snapshot": bp.get("quick_snapshot", []),
         "seconds": round(time.time() - t0, 2),
     }
 
