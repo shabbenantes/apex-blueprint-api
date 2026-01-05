@@ -762,27 +762,29 @@ def _slip_risk_gauge(score: int, st) -> Drawing:
     """
     Follow-Up Slip Risk gauge.
 
-    FIXED LAYOUT:
-    - qualifier is now BELOW the bar + labels, so it will never get covered.
-    - "low / medium / high" stay directly under the bar.
+    FINAL FIX:
+    - "low / medium / high" under the bar
+    - qualifier under everything
+    - score is in a TOP-RIGHT BADGE (with white background + border)
+      so it cannot blend into the bar or be hard to read.
     """
     score = max(0, min(100, int(score)))
 
     w = 460
-    h = 96  # a bit taller so nothing collides
+    h = 110  # taller for extra breathing room
 
     pad_x = 10
     bar_w = w - (pad_x * 2)
 
     # Layout coordinates (top-down)
-    title_y = 82
-    desc_y = 68
+    title_y = 96
+    desc_y = 80
 
-    bar_y = 44
+    bar_y = 54
     bar_h = 14
 
-    labels_y = 30       # low/medium/high (under bar)
-    qualifier_y = 16    # qualifier (under everything)
+    labels_y = 38       # low/medium/high (under bar)
+    qualifier_y = 22    # qualifier (under everything)
 
     d = Drawing(w, h)
 
@@ -791,15 +793,21 @@ def _slip_risk_gauge(score: int, st) -> Drawing:
     d.add(String(0, desc_y, "How likely follow-up and next steps get missed when things get busy.",
                  fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
 
+    # ✅ Score badge (top-right)
+    badge_w = 64
+    badge_h = 20
+    badge_x = w - badge_w
+    badge_y = title_y - 6  # aligns with title row
+
+    d.add(Rect(badge_x, badge_y, badge_w, badge_h,
+               strokeColor=st["BORDER"], fillColor=colors.white, strokeWidth=1))
+    d.add(String(w - 6, title_y, f"{score}",
+                 fontName="Helvetica-Bold", fontSize=14, fillColor=st["NAVY"], textAnchor="end"))
+
     # Bar background + fill
     d.add(Rect(pad_x, bar_y, bar_w, bar_h, strokeColor=st["BORDER"], fillColor=st["SOFT"], strokeWidth=1))
     fill_w = int(bar_w * (score / 100.0))
     d.add(Rect(pad_x, bar_y, fill_w, bar_h, strokeColor=None, fillColor=st["BLUE"]))
-
-    # Score number (kept above the bar so it stays readable)
-    label_x = pad_x + fill_w
-    label_x = max(pad_x + 18, min(pad_x + bar_w - 18, label_x))
-    d.add(String(label_x - 10, 56, f"{score}", fontName="Helvetica-Bold", fontSize=12, fillColor=st["NAVY"]))
 
     # Low/medium/high labels (UNDER the bar)
     d.add(String(pad_x, labels_y, "low", fontName="Helvetica", fontSize=9, fillColor=st["MUTED"]))
