@@ -1345,6 +1345,9 @@ def run_blueprint():
 
     pdf_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
 
+    # ✅ NEW: clean, top-level value for GoHighLevel mapping
+    primary_fix_name = bp.get("fix_1", {}).get("name", "")
+
     proposal_fields = {
         "fix_1_name": bp["fix_1"]["name"],
         "fix_1_what_this_fixes": bp["fix_1"]["what_this_fixes"],
@@ -1361,6 +1364,8 @@ def run_blueprint():
         "jobs_weekly": jobs_weekly if jobs_weekly is not None else "",
         "leads_normalized": leads_norm or "",
         "jobs_normalized": jobs_norm or "",
+        # ✅ NEW: also included here (optional, but handy)
+        "primary_fix_name": primary_fix_name,
     }
 
     context_blob = {
@@ -1373,6 +1378,8 @@ def run_blueprint():
         "proposal_fields": proposal_fields,
         "quick_snapshot": bp.get("quick_snapshot", []),
         "seconds": round(time.time() - t0, 2),
+        # ✅ NEW: also saved into context
+        "primary_fix_name": primary_fix_name,
     }
 
     if phone_raw:
@@ -1383,6 +1390,8 @@ def run_blueprint():
             "success": True,
             "pdf_url": pdf_url,
             "proposal_fields": proposal_fields,
+            # ✅ NEW: this is the one you map in GHL
+            "primary_fix_name": primary_fix_name,
             "name": name,
             "email": email,
             "phone_e164": phone_e164,
