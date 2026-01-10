@@ -5,9 +5,6 @@ import json
 import re
 import time
 import math
-import hmac
-import hashlib
-import base64
 from typing import Dict, Any, Optional, List, Tuple
 
 from openai import OpenAI
@@ -45,17 +42,6 @@ s3_client = boto3.client("s3", region_name=S3_REGION)
 # ---------- CTA / CALENDAR ----------
 DEFAULT_CALENDAR_URL = "https://api.leadconnectorhq.com/widget/bookings/automation-strategy-call-1"
 CALENDAR_URL = (os.environ.get("CALENDAR_URL", "") or "").strip() or DEFAULT_CALENDAR_URL
-
-# ---------- Shopify / Intake Security ----------
-# Option A (best for real Shopify webhooks): verify X-Shopify-Hmac-Sha256 with this secret.
-SHOPIFY_WEBHOOK_SECRET = (os.environ.get("SHOPIFY_WEBHOOK_SECRET", "") or "").strip()
-
-# Option B (simple + works for ANY form POST): send a shared secret header on your Shopify form submit
-# Header name: X-Apex-Secret
-APEX_INGEST_SECRET = (os.environ.get("APEX_INGEST_SECRET", "") or "").strip()
-
-# If true, we REQUIRE either a valid Shopify HMAC OR the X-Apex-Secret to match.
-REQUIRE_INGEST_AUTH = (os.environ.get("REQUIRE_INGEST_AUTH", "true") or "true").strip().lower() in {"1", "true", "yes", "y"}
 
 # ---------- Context store (in-memory) ----------
 CONTEXT_TTL_SECONDS = int(os.environ.get("CONTEXT_TTL_SECONDS", "86400"))  # 24h default
@@ -206,74 +192,6 @@ def _extract_json_object(text: str) -> dict:
         return json.loads(m.group(0))
     except Exception:
         return {}
-
-
-def _verify_shopify_webhook_hmac(raw_body: bytes, hmac_header: str, secret: str) -> bool:
-    """
-    Shopify Webhook verification:
-    - Header: X-Shopify-Hmac-Sha256 (base64)
-    - Compute: base64(hmac_sha256(secret, raw_body))
-    """
-    secret = (secret or "").strip()
-    hmac_header = (hmac_header or "").strip()
-    if not secret or not hmac_header:
-        return False
-
-    digest = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).digest()
-    computed = base64.b64encode(digest).decode("utf-8")
-    return hmac.compare_digest(computed, hmac_header)
-
-
-def _has_valid_ingest_auth(raw_body: bytes) -> bool:
-    """
-    Accepts EITHER:
-    - Valid Shopify webhook HMAC (if SHOPIFY_WEBHOOK_SECRET is set)
-    - OR X-Apex-Secret header matching APEX_INGEST_SECRET (simple shared secret)
-
-    If REQUIRE_INGEST_AUTH is False, always returns True.
-    """
-    if not REQUIRE_INGEST_AUTH:
-        return True
-
-    # Option A: Shopify webhook HMAC
-    shop_hmac = request.headers.get("X-Shopify-Hmac-Sha256", "") or request.headers.get("x-shopify-hmac-sha256", "")
-    if SHOPIFY_WEBHOOK_SECRET and shop_hmac:
-        if _verify_shopify_webhook_hmac(raw_body, shop_hmac, SHOPIFY_WEBHOOK_SECRET):
-            return True
-
-    # Option B: Shared secret (works with any custom form)
-    if APEX_INGEST_SECRET:
-        provided = (request.headers.get("X-Apex-Secret", "") or request.headers.get("x-apex-secret", "")).strip()
-        if provided and hmac.compare_digest(provided, APEX_INGEST_SECRET):
-            return True
-
-    return False
-
-
-def _coerce_incoming_payload() -> Dict[str, Any]:
-    """
-    Tries JSON first, then form-encoded (request.form).
-    Returns a flat dict for form posts, or parsed JSON for JSON requests.
-    """
-    data = request.get_json(silent=True)
-    if isinstance(data, dict) and data:
-        return data
-
-    # Form POST fallback (e.g., Shopify page form)
-    if request.form:
-        return {k: request.form.get(k) for k in request.form.keys()}
-
-    # Last resort: try raw body as json
-    raw = (request.get_data(cache=True) or b"").strip()
-    if raw:
-        try:
-            j = json.loads(raw.decode("utf-8"))
-            if isinstance(j, dict):
-                return j
-        except Exception:
-            pass
-
-    return {}
 
 
 # --------------------------------------------------------------------
@@ -1282,11 +1200,12 @@ def generate_pdf_blueprint(
 
 
 # --------------------------------------------------------------------
-# CORE BLUEPRINT RUNNER (reused by /run and Shopify intake)
+# /run – BLUEPRINT GENERATION
 # --------------------------------------------------------------------
-def _process_blueprint_payload(data: Dict[str, Any]):
+@app.route("/run", methods=["POST"])
+def run_blueprint():
     t0 = time.time()
-    data = data or {}
+    data = request.get_json(force=True) or {}
 
     contact = data.get("contact", {}) or data.get("contact_data", {}) or {}
     form_fields = (
@@ -1311,11 +1230,8 @@ def _process_blueprint_payload(data: Dict[str, Any]):
     business_name = _get_any(form_fields, ["business_name", "Business Name"])
     business_type = _get_any(form_fields, ["business_type", "Business Type"])
 
-    # ✅ Added common Shopify / site field keys so you don't have to rename anything
     services_offered = _get_any(form_fields, [
         "services_offered",
-        "services_you_offer",
-        "services",
         "Services You Offer",
         "In a sentence or two, what do you sell or do?",
         "What do you sell or do?",
@@ -1324,7 +1240,6 @@ def _process_blueprint_payload(data: Dict[str, Any]):
 
     stress = _get_any(form_fields, [
         "frustrations",
-        "what_frustrates_you_most",
         "What Frustrates You Most",
         "What feels hardest or most stressful right now?",
         "What feels hardest or most stressful right now",
@@ -1332,7 +1247,6 @@ def _process_blueprint_payload(data: Dict[str, Any]):
 
     remember = _get_any(form_fields, [
         "bottlenecks",
-        "biggest_operational_bottlenecks",
         "Biggest Operational Bottlenecks",
         "What do you feel like you’re always trying to remember or keep track of?",
         "What do you feel like you're always trying to remember or keep track of?",
@@ -1419,7 +1333,7 @@ def _process_blueprint_payload(data: Dict[str, Any]):
     )
 
     if not S3_BUCKET:
-        return {"success": False, "error": "S3_BUCKET_NAME env var is not set"}, 500
+        return jsonify({"success": False, "error": "S3_BUCKET_NAME env var is not set"}), 500
 
     s3_key = f"blueprints/{pdf_filename}"
     s3_client.upload_file(
@@ -1431,7 +1345,7 @@ def _process_blueprint_payload(data: Dict[str, Any]):
 
     pdf_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
 
-    # ✅ clean, top-level value for GoHighLevel mapping
+    # ✅ NEW: clean, top-level value for GoHighLevel mapping
     primary_fix_name = bp.get("fix_1", {}).get("name", "")
 
     proposal_fields = {
@@ -1450,6 +1364,7 @@ def _process_blueprint_payload(data: Dict[str, Any]):
         "jobs_weekly": jobs_weekly if jobs_weekly is not None else "",
         "leads_normalized": leads_norm or "",
         "jobs_normalized": jobs_norm or "",
+        # ✅ NEW: also included here (optional, but handy)
         "primary_fix_name": primary_fix_name,
     }
 
@@ -1463,93 +1378,26 @@ def _process_blueprint_payload(data: Dict[str, Any]):
         "proposal_fields": proposal_fields,
         "quick_snapshot": bp.get("quick_snapshot", []),
         "seconds": round(time.time() - t0, 2),
+        # ✅ NEW: also saved into context
         "primary_fix_name": primary_fix_name,
     }
 
     if phone_raw:
         store_context_for_phone(phone_raw, context_blob)
 
-    return (
+    return jsonify(
         {
             "success": True,
             "pdf_url": pdf_url,
             "proposal_fields": proposal_fields,
+            # ✅ NEW: this is the one you map in GHL
             "primary_fix_name": primary_fix_name,
             "name": name,
             "email": email,
             "phone_e164": phone_e164,
             "seconds": round(time.time() - t0, 2),
-        },
-        200,
+        }
     )
-
-
-# --------------------------------------------------------------------
-# /run – BLUEPRINT GENERATION (existing webhook format)
-# --------------------------------------------------------------------
-@app.route("/run", methods=["POST"])
-def run_blueprint():
-    data = request.get_json(force=True) or {}
-    payload, status = _process_blueprint_payload(data)
-    return jsonify(payload), status
-
-
-# --------------------------------------------------------------------
-# Shopify / Website Intake Endpoint (NO Zapier)
-# --------------------------------------------------------------------
-@app.route("/shopify/blueprint", methods=["POST"])
-def shopify_blueprint():
-    """
-    Use this endpoint from your Shopify form submission or Shopify webhook.
-
-    Security options:
-    - If SHOPIFY_WEBHOOK_SECRET is set and Shopify sends X-Shopify-Hmac-Sha256, we verify it.
-    - Otherwise (recommended for plain Shopify storefront forms), send header:
-        X-Apex-Secret: <your APEX_INGEST_SECRET>
-    """
-    raw_body = request.get_data(cache=True) or b""
-
-    if not _has_valid_ingest_auth(raw_body):
-        return jsonify({"success": False, "error": "Unauthorized"}), 401
-
-    incoming = _coerce_incoming_payload()
-
-    # If they already post in your native shape, just run it
-    if isinstance(incoming, dict) and ("contact" in incoming or "form_fields" in incoming):
-        payload, status = _process_blueprint_payload(incoming)
-        return jsonify(payload), status
-
-    # Otherwise: map a flat dict into your expected shape.
-    # Works with Shopify forms where fields are named like:
-    # business_name, business_type, services_you_offer, biggest_operational_bottlenecks, etc.
-    first_name = clean_value(incoming.get("first_name") or incoming.get("firstname") or incoming.get("First Name"))
-    last_name = clean_value(incoming.get("last_name") or incoming.get("lastname") or incoming.get("Last Name"))
-    full_name = clean_value(incoming.get("name") or incoming.get("full_name") or f"{first_name} {last_name}".strip())
-
-    email = clean_value(incoming.get("email") or incoming.get("Email"))
-    phone = clean_value(incoming.get("phone") or incoming.get("phone_number") or incoming.get("Phone"))
-
-    # Everything else becomes form_fields (so your existing _get_any calls can find them)
-    form_fields: Dict[str, Any] = {}
-    for k, v in (incoming or {}).items():
-        if k in {"email", "Email", "phone", "phone_number", "Phone", "name", "full_name", "first_name", "last_name", "firstname", "lastname"}:
-            continue
-        form_fields[str(k)] = v
-
-    data = {
-        "contact": {
-            "name": full_name,
-            "full_name": full_name,
-            "first_name": first_name,
-            "last_name": last_name,
-            "email": email,
-            "phone": phone,
-        },
-        "form_fields": form_fields,
-    }
-
-    payload, status = _process_blueprint_payload(data)
-    return jsonify(payload), status
 
 
 @app.route("/", methods=["GET"])
