@@ -835,13 +835,17 @@ def _what_i_help_with_block(st) -> Table:
 def _next_step_cta_block(st) -> Table:
     """
     CTA-style 'what to do next' that naturally follows 'What I can help with'.
-    (Updated: adds the 15-minute line.)
+
+    UPDATED to match your blueprint reality:
+    - You already provide Fix #1/#2/#3 in the PDF.
+    - The call is about reviewing it + what it takes to set it up.
     """
     bullets = [
         "Book a quick call.",
         "The next step takes about 15 minutes.",
-        "We’ll walk through your blueprint together.",
-        "We’ll pick the first fix and map simple next steps.",
+        "We’ll walk through your blueprint.",
+        "We’ll talk about what it would take to set it up.",
+        "You’ll leave with a clear next step.",
     ]
     return _card_table("What to do next", bullets, st, bg=st["CARD_BG_ALT"], placeholder_if_empty=False)
 
@@ -852,9 +856,9 @@ def _cta_block(st) -> List[Any]:
     call_details = _card_table(
         "What the call is",
         [
-            "15–20 minutes.",
-            "We review your blueprint and your biggest bottleneck.",
-            "You leave with a simple first step and a clear plan.",
+            "About 15 minutes.",
+            "We review your blueprint together.",
+            "You leave with a clear next step.",
         ],
         st,
         bg=st["CARD_BG"],
@@ -862,11 +866,10 @@ def _cta_block(st) -> List[Any]:
     )
 
     title = _card_table(
-        "Want help implementing this?",
+        "Want help fixing this?",
         [
-            "We’ll walk through your blueprint together.",
-            "We’ll pick the first fix that makes the biggest difference.",
-            "If it fits, we’ll talk through simple implementation.",
+            "We’ll walk through your blueprint.",
+            "We’ll talk about what it would take to set it up.",
             "No pressure. Just a calm plan.",
         ],
         st,
@@ -874,7 +877,14 @@ def _cta_block(st) -> List[Any]:
         placeholder_if_empty=False,
     )
 
-    btn_text = f'<link href="{safe_p(url)}" color="white"><b>Book a quick call →</b></link>'
+    # ✅ NEW: line directly above the button (as requested)
+    pre_btn_line = Paragraph(
+        safe_p("If you want help fixing this without guessing…"),
+        st["body"],
+    )
+
+    # ✅ NEW: button text
+    btn_text = f'<link href="{safe_p(url)}" color="white"><b>Help me fix this →</b></link>'
 
     btn = Table(
         [[Paragraph(btn_text, st["cta_btn"])]],
@@ -897,7 +907,7 @@ def _cta_block(st) -> List[Any]:
         )
     )
 
-    return [KeepTogether([call_details, Spacer(1, 12), title, Spacer(1, 12), btn])]
+    return [KeepTogether([call_details, Spacer(1, 12), title, Spacer(1, 12), pre_btn_line, Spacer(1, 10), btn])]
 
 
 # --------------------------------------------------------------------
@@ -1345,7 +1355,7 @@ def run_blueprint():
 
     pdf_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
 
-    # ✅ NEW: clean, top-level value for GoHighLevel mapping
+    # ✅ clean, top-level value for GoHighLevel mapping
     primary_fix_name = bp.get("fix_1", {}).get("name", "")
 
     proposal_fields = {
@@ -1364,7 +1374,6 @@ def run_blueprint():
         "jobs_weekly": jobs_weekly if jobs_weekly is not None else "",
         "leads_normalized": leads_norm or "",
         "jobs_normalized": jobs_norm or "",
-        # ✅ NEW: also included here (optional, but handy)
         "primary_fix_name": primary_fix_name,
     }
 
@@ -1378,7 +1387,6 @@ def run_blueprint():
         "proposal_fields": proposal_fields,
         "quick_snapshot": bp.get("quick_snapshot", []),
         "seconds": round(time.time() - t0, 2),
-        # ✅ NEW: also saved into context
         "primary_fix_name": primary_fix_name,
     }
 
@@ -1390,7 +1398,6 @@ def run_blueprint():
             "success": True,
             "pdf_url": pdf_url,
             "proposal_fields": proposal_fields,
-            # ✅ NEW: this is the one you map in GHL
             "primary_fix_name": primary_fix_name,
             "name": name,
             "email": email,
@@ -1407,3 +1414,4 @@ def healthcheck():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
